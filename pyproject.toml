@@ -1,0 +1,47 @@
+[project]
+name = "rl-course"
+version = "1.0.0"
+description = "Reinforcement Learning Crash Course — from fundamentals to PPO"
+requires-python = ">=3.11"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "RL Course"}
+]
+
+dependencies = [
+    "numpy>=1.26",
+    "scipy>=1.11",
+    "pandas>=2.1",
+    "matplotlib>=3.8",
+    "jupyter>=1.0",
+    "jupyterlab>=4.0",
+    "ipykernel>=6.0",
+    "ipywidgets>=8.0",
+    "gymnasium>=1.0",
+    "torch>=2.1",
+    "tensorboard>=2.14",
+    "tqdm>=4.66",
+    "imageio>=2.34",
+    "imageio-ffmpeg>=0.5",
+    "nbformat>=5.10",
+    "nbclient>=0.10",
+    "pytest>=8.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest-cov>=5.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.uv]
+dev-dependencies = []
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
