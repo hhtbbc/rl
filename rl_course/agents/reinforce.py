@@ -6,7 +6,7 @@ REINFORCE 算法实现族
 - REINFORCEWithBaselineAgent: 带基线的 REINFORCE，使用学习的价值函数作为基线
 """
 
-from typing import Dict, List
+from typing import Dict, List, Optional
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -28,10 +28,11 @@ class REINFORCEAgent(BaseAgent):
         self,
         state_dim: int,
         n_actions: int,
-        hidden_dims: List[int] = [64, 64],
+        hidden_dims: Optional[List[int]] = None,
         gamma: float = 0.99,
         lr: float = 1e-3,
         device: str = "cpu",
+        seed: Optional[int] = None,
     ):
         """
         Args:
@@ -41,8 +42,11 @@ class REINFORCEAgent(BaseAgent):
             gamma: 折扣因子
             lr: 学习率
             device: 设备 ("cpu" 或 "cuda")
+            seed: 随机种子
         """
-        super().__init__(seed=None)
+        super().__init__(seed=seed)
+        if hidden_dims is None:
+            hidden_dims = [64, 64]
         self.state_dim = state_dim
         self.n_actions = n_actions
         self.gamma = gamma
@@ -144,7 +148,7 @@ class REINFORCEAgent(BaseAgent):
         # 原始 REINFORCE 使用未归一化的 G_t，是无偏估计
         # 归一化引入了 episode 间的相关性，但实践中显著降低方差
         if returns.numel() > 1:
-            returns = (returns - returns.mean()) / (returns.std() + 1e-8)
+            returns = (returns - returns.mean()) / (returns.std(unbiased=False) + 1e-8)
 
         # 策略梯度损失
         # L = -1/N * sum log pi(a_t|s_t) * G_t
@@ -185,10 +189,11 @@ class REINFORCEWithBaselineAgent(BaseAgent):
         self,
         state_dim: int,
         n_actions: int,
-        hidden_dims: List[int] = [64, 64],
+        hidden_dims: Optional[List[int]] = None,
         gamma: float = 0.99,
         lr: float = 1e-3,
         device: str = "cpu",
+        seed: Optional[int] = None,
     ):
         """
         Args:
@@ -198,8 +203,11 @@ class REINFORCEWithBaselineAgent(BaseAgent):
             gamma: 折扣因子
             lr: 学习率
             device: 设备 ("cpu" 或 "cuda")
+            seed: 随机种子
         """
-        super().__init__(seed=None)
+        super().__init__(seed=seed)
+        if hidden_dims is None:
+            hidden_dims = [64, 64]
         self.state_dim = state_dim
         self.n_actions = n_actions
         self.gamma = gamma
@@ -302,7 +310,7 @@ class REINFORCEWithBaselineAgent(BaseAgent):
         # 注意: 标准化的是优势，不是回报！
         # Critic 的 target 仍然是原始回报 (见 value_loss)
         if advantages.numel() > 1:
-            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+            advantages = (advantages - advantages.mean()) / (advantages.std(unbiased=False) + 1e-8)
 
         # ===============================================================
         # 关键：对 advantages 调用 detach()！
