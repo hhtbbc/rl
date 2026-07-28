@@ -24,6 +24,7 @@ dependencies = [
     "tqdm>=4.66",
     "imageio>=2.34",
     "imageio-ffmpeg>=0.5",
+    "pygame>=2.5",
     "nbformat>=5.10",
     "nbclient>=0.10",
     "pytest>=8.0",
