@@ -133,7 +133,7 @@ class PPOAgent(BaseAgent):
         self.network: ActorCriticNetwork = ActorCriticNetwork(
             state_dim=state_dim,
             n_actions=n_actions,
-            hidden_dims=hidden_dims,
+            hidden_dims=self.hidden_dims,
         ).to(self.device)
 
         # ==================== 优化器 ====================
