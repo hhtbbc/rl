@@ -77,11 +77,11 @@ class GridWorld:
         self.rng = np.random.RandomState(seed)
         self.reset()
 
-    def reset(self) -> int:
-        """重置环境到起始位置。"""
+    def reset(self) -> Tuple[int, Dict[str, Any]]:
+        """重置环境到起始位置 (Gymnasium 兼容接口)。"""
         self.agent_pos = list(self.start_pos)
         self.steps_taken = 0
-        return self._pos_to_state[tuple(self.agent_pos)]
+        return self._pos_to_state[tuple(self.agent_pos)], {}
 
     def step(self, action: int) -> Tuple[int, float, bool, bool, Dict[str, Any]]:
         """
@@ -236,8 +236,14 @@ class GridWorld:
             P: shape (n_states, n_actions, n_states)
                P[s, a, s'] = 1 当动作 a 从状态 s 必然转移到 s'
         """
+        goal_state = self._pos_to_state[self.goal_pos]
         P = np.zeros((self.n_states, self.n_actions, self.n_states))
         for s in range(self.n_states):
+            # 目标状态是吸收状态：任何动作都留在原地
+            if s == goal_state:
+                P[s, :, s] = 1.0
+                continue
+
             r, c = self._state_to_pos[s]
             for a in range(self.n_actions):
                 dr, dc = self.ACTION_DELTAS[a]
@@ -255,15 +261,29 @@ class GridWorld:
 
     def get_reward_matrix(self) -> np.ndarray:
         """
-        计算奖励矩阵。
+        计算奖励矩阵 (基于转移的期望奖励)。
 
-        Returns:
-            R: shape (n_states, n_actions)
-               R[s, a] = 状态 s 执行动作 a 后的期望奖励
+        R[s, a] = Σ_{s'} P[s,a,s'] * r(s,a,s')
+        其中 r(s,a,s') = goal_reward if s'=goal else step_reward
+
+        对于确定性转移: R[s,a] = goal_reward (若动作 a 导致进入目标) 否则 step_reward
+        目标状态本身 R[goal,:] = 0 (吸收/终止后无奖励)
         """
-        R = np.full((self.n_states, self.n_actions), self.step_reward)
         goal_state = self._pos_to_state[self.goal_pos]
-        R[goal_state, :] = self.goal_reward
+        P = self.get_transition_matrix()
+        R = np.full((self.n_states, self.n_actions), self.step_reward)
+        # 计算每个 state-action 的期望奖励: 只有转移到目标才给 goal_reward
+        for s in range(self.n_states):
+            if s == goal_state:
+                R[s, :] = 0.0  # 吸收态，无后续奖励
+                continue
+            for a in range(self.n_actions):
+                if P[s, a, goal_state] > 0:
+                    # 期望奖励 = P(到目标)*goal + P(不到目标)*step
+                    R[s, a] = (
+                        P[s, a, goal_state] * self.goal_reward
+                        + (1 - P[s, a, goal_state]) * self.step_reward
+                    )
         return R
 
     # === Gymnasium 兼容性方法 ===

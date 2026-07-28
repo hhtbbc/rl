@@ -70,10 +70,10 @@ def test_gridworld():
     assert gw.n_states == 16
     assert gw.n_actions == 4
 
-    state = gw.reset()
+    state, _ = gw.reset()
     assert state == 0  # Start at (0,0)
 
-    # Test step — now returns 5-tuple (obs, reward, terminated, truncated, info)
+    # Test step — returns 5-tuple (obs, reward, terminated, truncated, info)
     result = gw.step(1)  # Right
     assert len(result) == 5
     next_state, reward, terminated, truncated, info = result
@@ -206,17 +206,17 @@ def test_tabular_agents():
 
     # SARSA
     sarsa = TabularSARSAAgent(n_states=2, n_actions=2, alpha=0.1, seed=42)
-    metrics = sarsa.update(0, 0, 1.0, 1, 1, False)
+    metrics = sarsa.update(0, 0, 1.0, 1, 1, done=False, terminated=False)
     assert "td_error" in metrics
 
     # Q-Learning
     ql = TabularQLearningAgent(n_states=2, n_actions=2, alpha=0.1, seed=42)
-    metrics = ql.update(0, 0, 1.0, 1, False)
+    metrics = ql.update(0, 0, 1.0, 1, done=False, terminated=False)
     assert "td_error" in metrics
 
     # Expected SARSA
     esarsa = TabularExpectedSARSAAgent(n_states=2, n_actions=2, alpha=0.1, seed=42)
-    metrics = esarsa.update(0, 0, 1.0, 1, False)
+    metrics = esarsa.update(0, 0, 1.0, 1, done=False, terminated=False)
     assert "td_error" in metrics
 
 

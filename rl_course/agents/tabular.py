@@ -62,7 +62,10 @@ class TabularMCAgent(BaseAgent):
 
     def update(self, episode: List[Tuple[int, int, float]]) -> Dict[str, float]:
         """
-        用一条完整 episode 更新 Q 值（First-visit MC）。
+        用一条完整 episode 更新 Q 值 (First-visit MC)。
+
+        正确实现: 先反向计算所有时间步的回报 G_t,
+        再正向遍历 episode, 只取每个 (s,a) 的首次出现。
 
         Args:
             episode: [(state, action, reward), ...] 列表
@@ -70,26 +73,32 @@ class TabularMCAgent(BaseAgent):
         Returns:
             字典形式的训练指标
         """
+        T = len(episode)
+
+        # Step 1: 反向计算所有 G_t
+        returns = np.zeros(T, dtype=np.float32)
         G = 0.0
+        for t in reversed(range(T)):
+            G = episode[t][2] + self.gamma * G
+            returns[t] = G
+
+        # Step 2: 正向筛选 First-visit
         visited = set()
-
-        for t in reversed(range(len(episode))):
-            state, action, reward = episode[t]
-            G = reward + self.gamma * G
-
-            # First-visit: 仅使用每对 (s, a) 的首次出现
+        for t in range(T):
+            state, action, _ = episode[t]
             if (state, action) not in visited:
                 visited.add((state, action))
-                self._returns_sum[state, action] += G
+                self._returns_sum[state, action] += returns[t]
                 self._returns_count[state, action] += 1
                 self.Q[state, action] = (
-                    self._returns_sum[state, action] / self._returns_count[state, action]
+                    self._returns_sum[state, action]
+                    / self._returns_count[state, action]
                 )
 
         # 更新策略
         self.policy = np.argmax(self.Q, axis=1)
 
-        return {"episode_return": G}
+        return {"episode_return": returns[0]}
 
 
 class TabularSARSAAgent(BaseAgent):
@@ -132,20 +141,23 @@ class TabularSARSAAgent(BaseAgent):
         return int(np.argmax(self.Q[obs]))
 
     def update(
-        self, state: int, action: int, reward: float, next_state: int, next_action: int, done: bool
+        self, state: int, action: int, reward: float,
+        next_state: int, next_action: int,
+        done: bool, terminated: bool = False,
     ) -> Dict[str, float]:
         """
         SARSA 单步更新。
+
+        bootstrap_mask = 1 - terminated: 只有真正终止才不 bootstrap。
+        时间截断 (done=True, terminated=False) 仍需从 next_state bootstrap。
 
         Returns:
             {"td_error": td_error}
         """
         current_q = self.Q[state, action]
+        bootstrap = 1.0 - float(terminated)
 
-        if done:
-            target = reward
-        else:
-            target = reward + self.gamma * self.Q[next_state, next_action]
+        target = reward + self.gamma * self.Q[next_state, next_action] * bootstrap
 
         td_error = target - current_q
         self.Q[state, action] += self.alpha * td_error
@@ -196,20 +208,21 @@ class TabularQLearningAgent(BaseAgent):
         return int(np.argmax(self.Q[obs]))
 
     def update(
-        self, state: int, action: int, reward: float, next_state: int, done: bool
+        self, state: int, action: int, reward: float,
+        next_state: int, done: bool, terminated: bool = False,
     ) -> Dict[str, float]:
         """
         Q-Learning 单步更新。
+
+        bootstrap_mask = 1 - terminated: 只有真正终止才不 bootstrap。
 
         Returns:
             {"td_error": td_error}
         """
         current_q = self.Q[state, action]
+        bootstrap = 1.0 - float(terminated)
 
-        if done:
-            target = reward
-        else:
-            target = reward + self.gamma * np.max(self.Q[next_state])
+        target = reward + self.gamma * np.max(self.Q[next_state]) * bootstrap
 
         td_error = target - current_q
         self.Q[state, action] += self.alpha * td_error
@@ -263,14 +276,13 @@ class TabularExpectedSARSAAgent(BaseAgent):
         return float(np.sum(probs * self.Q[state]))
 
     def update(
-        self, state: int, action: int, reward: float, next_state: int, done: bool
+        self, state: int, action: int, reward: float,
+        next_state: int, done: bool, terminated: bool = False,
     ) -> Dict[str, float]:
         current_q = self.Q[state, action]
+        bootstrap = 1.0 - float(terminated)
 
-        if done:
-            target = reward
-        else:
-            target = reward + self.gamma * self._expected_value(next_state)
+        target = reward + self.gamma * self._expected_value(next_state) * bootstrap
 
         td_error = target - current_q
         self.Q[state, action] += self.alpha * td_error
@@ -321,26 +333,22 @@ class TabularDoubleQLearningAgent(BaseAgent):
         return int(np.argmax(self.Q[obs]))
 
     def update(
-        self, state: int, action: int, reward: float, next_state: int, done: bool
+        self, state: int, action: int, reward: float,
+        next_state: int, done: bool, terminated: bool = False,
     ) -> Dict[str, float]:
         """Double Q-Learning 更新"""
-        # 随机选择更新 Q_A 还是 Q_B
+        bootstrap = 1.0 - float(terminated)
+
         if np.random.rand() < 0.5:
             current_q = self.QA[state, action]
-            if done:
-                target = reward
-            else:
-                best_action = np.argmax(self.QA[next_state])
-                target = reward + self.gamma * self.QB[next_state, best_action]
+            best_action = np.argmax(self.QA[next_state])
+            target = reward + self.gamma * self.QB[next_state, best_action] * bootstrap
             td_error = target - current_q
             self.QA[state, action] += self.alpha * td_error
         else:
             current_q = self.QB[state, action]
-            if done:
-                target = reward
-            else:
-                best_action = np.argmax(self.QB[next_state])
-                target = reward + self.gamma * self.QA[next_state, best_action]
+            best_action = np.argmax(self.QB[next_state])
+            target = reward + self.gamma * self.QA[next_state, best_action] * bootstrap
             td_error = target - current_q
             self.QB[state, action] += self.alpha * td_error
 
