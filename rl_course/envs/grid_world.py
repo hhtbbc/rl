@@ -77,9 +77,32 @@ class GridWorld:
         self.rng = np.random.RandomState(seed)
         self.reset()
 
-    def reset(self) -> Tuple[int, Dict[str, Any]]:
-        """重置环境到起始位置 (Gymnasium 兼容接口)。"""
-        self.agent_pos = list(self.start_pos)
+    def reset(
+        self,
+        *,
+        seed: Optional[int] = None,
+        options: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[int, Dict[str, Any]]:
+        """重置环境 (Gymnasium 兼容接口)。
+
+        Args:
+            seed: 可选随机种子
+            options: 可选字典, 支持 "start_state" 键指定初始状态索引
+
+        Returns:
+            (observation, info) 元组
+        """
+        if seed is not None:
+            self.rng = np.random.RandomState(seed)
+
+        if options and "start_state" in options:
+            start_state = int(options["start_state"])
+            if start_state not in self._state_to_pos:
+                raise ValueError(f"Invalid start_state: {start_state}")
+            self.agent_pos = list(self._state_to_pos[start_state])
+        else:
+            self.agent_pos = list(self.start_pos)
+
         self.steps_taken = 0
         return self._pos_to_state[tuple(self.agent_pos)], {}
 

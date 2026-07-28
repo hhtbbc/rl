@@ -137,23 +137,30 @@ class TabularSARSAAgent(BaseAgent):
         self.epsilon = epsilon
 
         self.Q = np.zeros((n_states, n_actions), dtype=np.float32)
+        self.rng = np.random.RandomState(seed)
 
     def act(self, obs: int, train: bool = True) -> int:
         """ε-greedy 动作选择"""
-        if train and np.random.rand() < self.epsilon:
-            return np.random.randint(self.n_actions)
+        if train and self.rng.rand() < self.epsilon:
+            return self.rng.randint(self.n_actions)
         return int(np.argmax(self.Q[obs]))
 
     def update(
         self, state: int, action: int, reward: float,
         next_state: int, next_action: int,
-        done: bool, terminated: bool = False,
+        *, terminated: bool,
     ) -> Dict[str, float]:
         """
         SARSA 单步更新。
 
         bootstrap_mask = 1 - terminated: 只有真正终止才不 bootstrap。
-        时间截断 (done=True, terminated=False) 仍需从 next_state bootstrap。
+        时间截断 (terminated=False) 仍需从 next_state bootstrap。
+
+        Args:
+            state, action: 当前状态-动作
+            reward: 即时奖励
+            next_state, next_action: 下一状态-动作
+            terminated: 是否为真正的环境终止 (True → 不 bootstrap)
 
         Returns:
             {"td_error": td_error}
@@ -204,21 +211,28 @@ class TabularQLearningAgent(BaseAgent):
         self.epsilon = epsilon
 
         self.Q = np.zeros((n_states, n_actions), dtype=np.float32)
+        self.rng = np.random.RandomState(seed)
 
     def act(self, obs: int, train: bool = True) -> int:
         """ε-greedy (行为策略)"""
-        if train and np.random.rand() < self.epsilon:
-            return np.random.randint(self.n_actions)
+        if train and self.rng.rand() < self.epsilon:
+            return self.rng.randint(self.n_actions)
         return int(np.argmax(self.Q[obs]))
 
     def update(
         self, state: int, action: int, reward: float,
-        next_state: int, done: bool, terminated: bool = False,
+        next_state: int, *, terminated: bool,
     ) -> Dict[str, float]:
         """
         Q-Learning 单步更新。
 
         bootstrap_mask = 1 - terminated: 只有真正终止才不 bootstrap。
+
+        Args:
+            state, action: 当前状态-动作
+            reward: 即时奖励
+            next_state: 下一状态
+            terminated: 是否为真正的环境终止 (True → 不 bootstrap)
 
         Returns:
             {"td_error": td_error}
@@ -262,10 +276,11 @@ class TabularExpectedSARSAAgent(BaseAgent):
         self.epsilon = epsilon
 
         self.Q = np.zeros((n_states, n_actions), dtype=np.float32)
+        self.rng = np.random.RandomState(seed)
 
     def act(self, obs: int, train: bool = True) -> int:
-        if train and np.random.rand() < self.epsilon:
-            return np.random.randint(self.n_actions)
+        if train and self.rng.rand() < self.epsilon:
+            return self.rng.randint(self.n_actions)
         return int(np.argmax(self.Q[obs]))
 
     def _expected_value(self, state: int) -> float:
@@ -281,7 +296,7 @@ class TabularExpectedSARSAAgent(BaseAgent):
 
     def update(
         self, state: int, action: int, reward: float,
-        next_state: int, done: bool, terminated: bool = False,
+        next_state: int, *, terminated: bool,
     ) -> Dict[str, float]:
         current_q = self.Q[state, action]
         bootstrap = 1.0 - float(terminated)
@@ -325,6 +340,7 @@ class TabularDoubleQLearningAgent(BaseAgent):
 
         self.QA = np.zeros((n_states, n_actions), dtype=np.float32)
         self.QB = np.zeros((n_states, n_actions), dtype=np.float32)
+        self.rng = np.random.RandomState(seed)
 
     @property
     def Q(self):
@@ -332,18 +348,18 @@ class TabularDoubleQLearningAgent(BaseAgent):
         return (self.QA + self.QB) / 2.0
 
     def act(self, obs: int, train: bool = True) -> int:
-        if train and np.random.rand() < self.epsilon:
-            return np.random.randint(self.n_actions)
+        if train and self.rng.rand() < self.epsilon:
+            return self.rng.randint(self.n_actions)
         return int(np.argmax(self.Q[obs]))
 
     def update(
         self, state: int, action: int, reward: float,
-        next_state: int, done: bool, terminated: bool = False,
+        next_state: int, *, terminated: bool,
     ) -> Dict[str, float]:
         """Double Q-Learning 更新"""
         bootstrap = 1.0 - float(terminated)
 
-        if np.random.rand() < 0.5:
+        if self.rng.rand() < 0.5:
             current_q = self.QA[state, action]
             best_action = np.argmax(self.QA[next_state])
             target = reward + self.gamma * self.QB[next_state, best_action] * bootstrap

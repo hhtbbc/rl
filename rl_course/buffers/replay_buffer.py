@@ -45,7 +45,8 @@ class ReplayBuffer:
         reward: float,
         next_state: np.ndarray,
         done: bool,
-        terminated: bool = False,
+        *,
+        terminated: bool,
     ) -> None:
         """
         存入一个 transition。

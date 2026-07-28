@@ -162,7 +162,7 @@ def test_replay_buffer():
     buf = ReplayBuffer(capacity=10, state_dim=4)
 
     for i in range(15):
-        buf.push(np.ones(4) * i, 0, 1.0, np.zeros(4), False)
+        buf.push(np.ones(4) * i, 0, 1.0, np.zeros(4), False, terminated=False)
 
     assert len(buf) == 10  # Max capacity
 
@@ -202,21 +202,27 @@ def test_tabular_agents():
         TabularSARSAAgent,
         TabularQLearningAgent,
         TabularExpectedSARSAAgent,
+        TabularDoubleQLearningAgent,
     )
 
     # SARSA
     sarsa = TabularSARSAAgent(n_states=2, n_actions=2, alpha=0.1, seed=42)
-    metrics = sarsa.update(0, 0, 1.0, 1, 1, done=False, terminated=False)
+    metrics = sarsa.update(0, 0, 1.0, 1, 1, terminated=False)
     assert "td_error" in metrics
 
     # Q-Learning
     ql = TabularQLearningAgent(n_states=2, n_actions=2, alpha=0.1, seed=42)
-    metrics = ql.update(0, 0, 1.0, 1, done=False, terminated=False)
+    metrics = ql.update(0, 0, 1.0, 1, terminated=False)
     assert "td_error" in metrics
 
     # Expected SARSA
     esarsa = TabularExpectedSARSAAgent(n_states=2, n_actions=2, alpha=0.1, seed=42)
-    metrics = esarsa.update(0, 0, 1.0, 1, done=False, terminated=False)
+    metrics = esarsa.update(0, 0, 1.0, 1, terminated=False)
+    assert "td_error" in metrics
+
+    # Double Q-Learning
+    dql = TabularDoubleQLearningAgent(n_states=2, n_actions=2, alpha=0.1, seed=42)
+    metrics = dql.update(0, 0, 1.0, 1, terminated=False)
     assert "td_error" in metrics
 
 

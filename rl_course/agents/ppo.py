@@ -96,8 +96,9 @@ class PPOAgent(BaseAgent):
             batch_size: 小批量大小，默认 64
             n_epochs: 每个 rollout 后的训练轮数，默认 10
             max_grad_norm: 梯度裁剪的最大 L2 范数，默认 0.5
-            target_kl: 提前停止的 KL 散度阈值。当 minibatch 的近似 KL > target_kl 时
-                       停止当前 epoch 的更新。None 表示不提前停止。
+            target_kl: 提前停止的 KL 散度阈值。每个 epoch 完成后，
+                       使用更新后的策略在完整 rollout 上估计 KL；
+                       超过阈值时停止剩余 epochs。None 表示不提前停止。
             device: 计算设备，默认 "cpu"
         """
         super().__init__()
@@ -325,6 +326,7 @@ class PPOAgent(BaseAgent):
 
         epochs_completed: int = 0
         early_stopped: bool = False
+        epoch_kl: Optional[float] = None
 
         for epoch in range(self.n_epochs):
             # ---- 每 epoch 重新获取 shuffled minibatches ----
@@ -555,7 +557,8 @@ class PPOAgent(BaseAgent):
             "explained_variance": float(explained_variance.item()),
             "n_updates": float(n_updates),
             "epochs_completed": float(epochs_completed),
-            "early_stopped": float(early_stopped),
+            "early_stopped": early_stopped,
+            "final_full_batch_kl": epoch_kl if self.target_kl is not None and epochs_completed > 0 else None,
         }
 
         # 记录到历史
