@@ -102,7 +102,7 @@ class PPOAgent(BaseAgent):
                        超过阈值时停止剩余 epochs。None 表示不提前停止。
             device: 计算设备，默认 "cpu"
         """
-        super().__init__()
+        super().__init__(seed=seed)
 
         # ==================== 超参数 ====================
         self.state_dim: int = state_dim

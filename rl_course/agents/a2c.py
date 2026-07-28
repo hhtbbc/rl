@@ -134,6 +134,11 @@ class A2CAgent(BaseAgent):
         self.terminated_list: List[bool] = []     # 真正终止
         self.next_values: List[float] = []         # V(s_{t+1}), 在 env.reset() 前计算
 
+    @property
+    def ready_to_update(self) -> bool:
+        """是否已收集足够步数用于 n-step 更新"""
+        return len(self.states) >= self.n_steps
+
     def store(
         self, reward: float, terminated: bool, truncated: bool,
         next_value: float,
