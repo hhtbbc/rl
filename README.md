@@ -125,7 +125,7 @@ rl/
 ├── pyproject.toml               # 项目配置和依赖
 ├── IMPLEMENTATION_PLAN.md       # 实施计划
 ├── PROGRESS.md                  # 进度记录
-├── notebooks/                   # Jupyter Notebook 教程 (25 个)
+├── notebooks/                   # Jupyter Notebook 教程 (26 个, 00-25)
 │   ├── 00_course_guide.ipynb
 │   ├── 01_rl_overview.ipynb
 │   └── ...
