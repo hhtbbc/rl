@@ -2,7 +2,7 @@
 GridWorld 环境
 
 可配置的网格世界强化学习环境。
-遵循 Gymnasium API 但不依赖 gymnasium 作为运行时依赖。
+遵循 Gymnasium API。observation_space/action_space 属性在访问时导入 gymnasium。
 """
 
 from typing import Tuple, Dict, Any, Optional, List
@@ -44,8 +44,8 @@ class GridWorld:
         self,
         width: int = 5,
         height: int = 5,
-        start_pos: Tuple[int, int] = (0, 0),
-        goal_pos: Tuple[int, int] = (4, 4),
+        start_pos: Optional[Tuple[int, int]] = None,
+        goal_pos: Optional[Tuple[int, int]] = None,
         blocked_positions: Optional[List[Tuple[int, int]]] = None,
         step_reward: float = -1.0,
         goal_reward: float = 10.0,
@@ -53,8 +53,23 @@ class GridWorld:
         max_steps: int = 100,
         seed: int = 42,
     ):
+        # --- 基础参数 ---
+        if width <= 0 or height <= 0:
+            raise ValueError(f"width={width}, height={height} must be > 0")
+        if max_steps <= 0:
+            raise ValueError(f"max_steps={max_steps} must be > 0")
+        if not 0.0 <= slip_prob <= 1.0:
+            raise ValueError(f"slip_prob={slip_prob} must be in [0, 1]")
+
         self.width = width
         self.height = height
+
+        # --- 位置默认值 ---
+        if start_pos is None:
+            start_pos = (0, 0)
+        if goal_pos is None:
+            goal_pos = (height - 1, width - 1)
+
         self.start_pos = start_pos
         self.goal_pos = goal_pos
         self.blocked_positions = blocked_positions or []
@@ -62,6 +77,28 @@ class GridWorld:
         self.goal_reward = goal_reward
         self.slip_prob = slip_prob
         self.max_steps = max_steps
+
+        # --- 位置合法性验证 ---
+        def _check_pos(name: str, pos: Tuple[int, int]) -> None:
+            r, c = pos
+            if not (0 <= r < height and 0 <= c < width):
+                raise ValueError(
+                    f"{name}={pos} is outside {height}×{width} grid"
+                )
+
+        _check_pos("start_pos", start_pos)
+        _check_pos("goal_pos", goal_pos)
+        for bp in self.blocked_positions:
+            _check_pos("blocked_position", bp)
+
+        if start_pos == goal_pos:
+            raise ValueError(
+                f"start_pos={start_pos} must differ from goal_pos={goal_pos}"
+            )
+        if start_pos in self.blocked_positions:
+            raise ValueError(f"start_pos={start_pos} must not be blocked")
+        if goal_pos in self.blocked_positions:
+            raise ValueError(f"goal_pos={goal_pos} must not be blocked")
 
         self.n_states = width * height
         self.n_actions = 4

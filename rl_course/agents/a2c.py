@@ -41,7 +41,7 @@ class A2CAgent(BaseAgent):
         self,
         state_dim: int,
         n_actions: int,
-        hidden_dims: List[int] = [64, 64],
+        hidden_dims: Optional[List[int]] = None,
         gamma: float = 0.99,
         lr: float = 1e-3,
         n_steps: int = 5,
@@ -55,6 +55,8 @@ class A2CAgent(BaseAgent):
         self.n_steps = n_steps
         self.entropy_coef = entropy_coef
         self.device = torch.device(device)
+        if hidden_dims is None:
+            hidden_dims = [64, 64]
 
         self.actor_critic = ActorCriticNetwork(
             state_dim, n_actions, hidden_dims
@@ -197,7 +199,13 @@ class A2CAgent(BaseAgent):
         #   正确做法: 先检查 done[2]=True, 重置 G, 再计算 R2。
         # ================================================================
         returns = np.zeros(T, dtype=np.float32)
-        G = 0.0
+
+        # 初始化 G: 如果 rollout 末尾不是 episode 边界，
+        # 从最后一个 next_value (V(s_T)) 开始 bootstrap
+        if self.dones[-1]:
+            G = 0.0
+        else:
+            G = self.next_values[-1]
 
         for t in reversed(range(T)):
             if self.dones[t]:

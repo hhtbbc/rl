@@ -538,7 +538,7 @@ class PPOAgent(BaseAgent):
         # Step 7: 汇总指标
         # ----------------------------------------------------------------
         n_updates: int = len(policy_loss_list)  # 实际执行的 optimizer step 数
-        metrics: Dict[str, float] = {
+        metrics: Dict[str, object] = {
             "policy_loss": (
                 float(np.mean(policy_loss_list)) if policy_loss_list else 0.0
             ),
@@ -548,15 +548,15 @@ class PPOAgent(BaseAgent):
             "entropy_loss": (
                 float(np.mean(entropy_loss_list)) if entropy_loss_list else 0.0
             ),
-            "approx_kl": (
+            "pre_step_approx_kl": (
                 float(np.mean(approx_kl_list)) if approx_kl_list else 0.0
             ),
-            "clip_fraction": (
+            "pre_step_clip_fraction": (
                 float(np.mean(clip_fractions_list)) if clip_fractions_list else 0.0
             ),
             "explained_variance": float(explained_variance.item()),
-            "n_updates": float(n_updates),
-            "epochs_completed": float(epochs_completed),
+            "n_updates": n_updates,
+            "epochs_completed": epochs_completed,
             "early_stopped": early_stopped,
             "final_full_batch_kl": epoch_kl if self.target_kl is not None and epochs_completed > 0 else None,
         }

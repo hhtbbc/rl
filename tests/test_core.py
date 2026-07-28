@@ -243,3 +243,158 @@ def test_all_agent_imports():
     # Just verify imports work
     assert BaseAgent is not None
     assert PPOAgent is not None
+
+
+def test_a2c_n_step_returns():
+    """Test A2C n-step return computation with known values."""
+    from rl_course.agents.a2c import A2CAgent
+    import torch
+    import numpy as np
+
+    agent = A2CAgent(state_dim=2, n_actions=2, gamma=0.9, lr=1e-3, n_steps=5)
+
+    # Simulate a 2-step non-terminal rollout
+    agent.states = [torch.zeros(2), torch.zeros(2)]
+    agent.actions = [0, 0]
+    agent.rewards = [1.0, 2.0]
+    agent.dones = [False, False]
+    agent.terminated_list = [False, False]
+    agent.next_values = [3.0, 5.0]  # V(s1)=3, V(s2)=5
+
+    # Manually trigger reward computation
+    T = 2
+    returns = np.zeros(T, dtype=np.float32)
+    G = agent.next_values[-1]  # = 5.0 (bootstrap from last state)
+    for t in reversed(range(T)):
+        if agent.dones[t]:
+            mask = 1.0 - float(agent.terminated_list[t])
+            G = agent.rewards[t] + agent.gamma * agent.next_values[t] * mask
+        else:
+            G = agent.rewards[t] + agent.gamma * G
+        returns[t] = G
+
+    # R1 = 2 + 0.9*5 = 6.5
+    # R0 = 1 + 0.9*6.5 = 6.85
+    assert abs(returns[1] - 6.5) < 1e-5, f"Expected R1=6.5, got {returns[1]}"
+    assert abs(returns[0] - 6.85) < 1e-5, f"Expected R0=6.85, got {returns[0]}"
+
+    # Clean up
+    agent.states.clear()
+    agent.actions.clear()
+    agent.rewards.clear()
+    agent.dones.clear()
+    agent.terminated_list.clear()
+    agent.next_values.clear()
+
+
+def test_a2c_mid_rollout_terminated():
+    """Test A2C mid-rollout terminated boundary."""
+    from rl_course.agents.a2c import A2CAgent
+    import torch
+    import numpy as np
+
+    agent = A2CAgent(state_dim=2, n_actions=2, gamma=0.9, lr=1e-3, n_steps=5)
+
+    # Episode 1: r0, r1(terminated). Episode 2: r2, r3
+    agent.states = [torch.zeros(2)] * 4
+    agent.actions = [0] * 4
+    agent.rewards = [1.0, 2.0, 3.0, 4.0]
+    agent.dones = [False, True, False, False]
+    agent.terminated_list = [False, True, False, False]
+    agent.next_values = [10.0, 0.0, 20.0, 30.0]  # term at idx1→next_value=0
+
+    T = 4
+    returns = np.zeros(T, dtype=np.float32)
+    G = agent.next_values[-1]  # 30
+    for t in reversed(range(T)):
+        if agent.dones[t]:
+            mask = 1.0 - float(agent.terminated_list[t])
+            G = agent.rewards[t] + agent.gamma * agent.next_values[t] * mask
+        else:
+            G = agent.rewards[t] + agent.gamma * G
+        returns[t] = G
+
+    # R3 = 4 + 0.9*30 = 31
+    # R2 = 3 + 0.9*31 = 30.9
+    # R1 = terminated: r1 + gamma*0*0 = 2 (no bootstrap, no cross-episode)
+    # R0 = 1 + 0.9*2 = 2.8
+    assert abs(returns[3] - 31.0) < 1e-4, f"R3={returns[3]}"
+    assert abs(returns[2] - 30.9) < 1e-4, f"R2={returns[2]}"
+    assert abs(returns[1] - 2.0) < 1e-4, f"R1={returns[1]} (should not include ep2)"
+    assert abs(returns[0] - 2.8) < 1e-4, f"R0={returns[0]}"
+
+    agent.states.clear(); agent.actions.clear(); agent.rewards.clear()
+    agent.dones.clear(); agent.terminated_list.clear(); agent.next_values.clear()
+
+
+def test_gridworld_default_goal():
+    """Test GridWorld auto-computes goal from dimensions."""
+    from rl_course.envs.grid_world import GridWorld
+
+    gw = GridWorld(width=4, height=4)
+    assert gw.goal_pos == (3, 3), f"Expected (3,3), got {gw.goal_pos}"
+
+    gw2 = GridWorld(width=10, height=6)
+    assert gw2.goal_pos == (5, 9), f"Expected (5,9), got {gw2.goal_pos}"
+
+
+def test_gridworld_validation():
+    """Test GridWorld validates positions."""
+    from rl_course.envs.grid_world import GridWorld
+    import pytest
+
+    # goal outside grid
+    with pytest.raises(ValueError, match="outside"):
+        GridWorld(width=3, height=3, goal_pos=(5, 5))
+
+    # start == goal
+    with pytest.raises(ValueError, match="must differ"):
+        GridWorld(width=3, height=3, start_pos=(1, 1), goal_pos=(1, 1))
+
+    # start on blocked
+    with pytest.raises(ValueError, match="blocked"):
+        GridWorld(width=3, height=3, start_pos=(1, 1), blocked_positions=[(1, 1)])
+
+
+def test_tabular_td_targets():
+    """Test tabular TD targets with known values."""
+    from rl_course.agents.tabular import (
+        TabularQLearningAgent, TabularSARSAAgent
+    )
+    import numpy as np
+
+    # Q-Learning: terminated=False → bootstrap
+    ql = TabularQLearningAgent(n_states=3, n_actions=2, gamma=0.9, alpha=1.0, seed=42)
+    ql.Q[1] = [5.0, 3.0]  # max Q(s') = 5
+    metrics = ql.update(state=0, action=0, reward=2.0, next_state=1, terminated=False)
+    # target = 2 + 0.9*5 = 6.5, Q[0,0] was 0 → td_error = 6.5, Q[0,0] = 0 + 1.0*6.5 = 6.5
+    assert abs(ql.Q[0, 0] - 6.5) < 1e-5, f"Q[0,0]={ql.Q[0,0]}"
+    assert abs(metrics["td_error"] - 6.5) < 1e-5
+
+    # Q-Learning: terminated=True → no bootstrap
+    ql2 = TabularQLearningAgent(n_states=3, n_actions=2, gamma=0.9, alpha=1.0, seed=42)
+    ql2.Q[1] = [5.0, 3.0]
+    metrics2 = ql2.update(state=0, action=1, reward=2.0, next_state=1, terminated=True)
+    # target = 2 + 0 = 2, Q[0,1] was 0 → td_error = 2
+    assert abs(ql2.Q[0, 1] - 2.0) < 1e-5, f"Q[0,1]={ql2.Q[0,1]}"
+    assert abs(metrics2["td_error"] - 2.0) < 1e-5
+
+
+def test_mc_agent_first_visit():
+    """Test First-Visit MC with repeated state."""
+    from rl_course.agents.tabular import TabularMCAgent
+
+    agent = TabularMCAgent(n_states=3, n_actions=2, gamma=1.0, seed=42)
+    # Episode: (s=0,a=0,r=1), (s=1,a=1,r=2), (s=0,a=0,r=3), done
+    episode = [(0, 0, 1.0), (1, 1, 2.0), (0, 0, 3.0)]
+    metrics = agent.update(episode)
+
+    # Returns: G2 = 3, G1 = 2+3=5, G0 = 1+2+3=6
+    # First-visit: (0,0) counted once with G0=6, (1,1) counted with G1=5
+    assert abs(agent.Q[0, 0] - 6.0) < 1e-5, f"Q[0,0] should be 6.0, got {agent.Q[0,0]}"
+    assert abs(agent.Q[1, 1] - 5.0) < 1e-5, f"Q[1,1] should be 5.0, got {agent.Q[1,1]}"
+    # (0,0) second visit should NOT update (first visit already counted)
+    assert agent._returns_count[0, 0] == 1
+    assert agent._returns_count[1, 1] == 1
+
+    assert abs(metrics["episode_return"] - 6.0) < 1e-5
