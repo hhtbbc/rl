@@ -18,16 +18,20 @@ from rl_course.agents.base import BaseAgent
 
 class TabularMCAgent(BaseAgent):
     """
-    First-Visit Monte Carlo 控制（Exploring Starts）。
+    First-Visit On-Policy ε-soft MC Control。
 
-    使用 exploring starts 保证所有状态-动作对被探索。
+    使用 ε-greedy 探索保证所有状态-动作对被持续访问。
     适用于 episodic 环境。
+
+    注意: 算法名称中的 "MC Control" 特指 First-Visit MC 控制。
+    算法使用 ε-greedy 策略（非 Exploring Starts），
+    通过 ε-soft 策略保证持续探索。
 
     Args:
         n_states: 状态数量
         n_actions: 动作数量
         gamma: 折扣因子
-        epsilon: ε-greedy 探索率（0 表示纯 exploiting starts）
+        epsilon: ε-greedy 探索率
     """
 
     def __init__(

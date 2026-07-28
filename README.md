@@ -136,18 +136,17 @@ rl/
 │   ├── buffers/                 # 经验回放和 Rollout 缓冲区
 │   ├── utils/                   # 工具函数 (种子, 配置, 日志)
 │   └── visualization/           # 绑图和视频生成
-├── exercises/                   # 练习题
-├── solutions/                   # 参考答案
-├── tests/                       # 单元测试
-├── configs/                     # 训练配置文件
-├── scripts/                     # 辅助脚本
+├── exercises/                   # 练习题 (待补充)
+├── solutions/                   # 参考答案 (待补充)
+├── tests/                       # 单元测试 (12 个)
+├── scripts/                     # 辅助脚本 (notebook 验证等)
 ├── outputs/                     # 输出文件
 │   ├── figures/                 # 图片
 │   ├── videos/                  # GIF/MP4 视频
 │   ├── checkpoints/             # 模型权重
 │   ├── logs/                    # TensorBoard 日志
 │   └── reports/                 # 实验报告
-└── references/                  # 参考文献
+└── .github/workflows/           # CI 配置
 ```
 
 ## CPU/GPU 使用说明
@@ -158,8 +157,9 @@ rl/
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 ```
 
-- **快速模式**（`fast_mode=True`）：2-3 分钟 CPU，30 秒 GPU
-- **完整模式**（`fast_mode=False`）：10-30 分钟 CPU，2-5 分钟 GPU
+- **快速验证**（`--fast`）：跳过 5 个长训练 Notebook，2-3 分钟 CPU
+- **完整验证**（无 `--fast`）：所有 26 个 Notebook，10-30 分钟 CPU
+- **语法检查**（`--syntax-only`）：仅编译检查，秒级完成
 
 ## 学习顺序
 

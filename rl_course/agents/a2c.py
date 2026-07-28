@@ -132,6 +132,10 @@ class A2CAgent(BaseAgent):
         5. 价值损失: MSE(V(s), R)
         6. 熵奖励: entropy_coef * mean(H(pi))
 
+        Episode boundary 处理:
+        - done=True 处重置回报累积，防止跨 episode 传播
+        - terminated 控制是否从 V(s_{t+n}) 引导
+
         Args:
             next_obs: 最后一个动作后的下一个观测，用于 n-step 引导。
                       None 表示 episode 已结束（引导值为 0）。
@@ -146,7 +150,6 @@ class A2CAgent(BaseAgent):
         states = torch.stack(self.states).to(self.device)
         actions = torch.LongTensor(self.actions).to(self.device)
         rewards = torch.FloatTensor(self.rewards).to(self.device)
-        dones = torch.FloatTensor(self.dones).to(self.device)
 
         # Actor-Critic 前向传播（保留计算图用于梯度）
         logits, values = self.actor_critic(states)
@@ -181,16 +184,15 @@ class A2CAgent(BaseAgent):
             G = 0.0
 
         # 从后向前递归计算 n-step 回报
-        # 使用 terminated (而非 done) 控制 bootstrap:
-        #   - terminated=True: G = r (不 bootstrap)
-        #   - terminated=False (包括 truncated): G = r + gamma * G (bootstrap)
-        # 注意: 这是教学简化。若 rollout 中间发生 truncation 且 env 已 reset，
-        # G 会跨 episode 边界传播。标准做法是保存 final_observation。
+        # 关键: dones 控制跨 episode 传播，防止不同 episode 的回报混合
+        #   done=True → G 重置为 0（新的 episode 开始）
+        #   done=False → G 正常累积
         returns = []
         for i in reversed(range(len(rewards))):
-            term = self.terminated_list[i]
-            G = rewards[i] + self.gamma * G * (1.0 - float(term))
+            G = rewards[i] + self.gamma * G
             returns.insert(0, G)
+            if self.dones[i]:
+                G = 0.0  # episode 边界：下一轮迭代从新 episode 开始
         returns = torch.FloatTensor(returns).to(self.device)
 
         # 计算优势 A = R_t - V(s_t)

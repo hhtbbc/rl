@@ -60,7 +60,8 @@ class RolloutBuffer:
         log_prob: float,
         value: float,
         next_value: float,
-        terminated: bool = False,
+        *,
+        terminated: bool,
     ) -> None:
         """
         存入一步数据。
@@ -77,8 +78,16 @@ class RolloutBuffer:
                         对于 truncated=True: next_value=V(final_obs) (截断前最终状态)
                         对于正常步: next_value=V(next_state)
                         此值由调用者在 env.step() 之后、env.reset() 之前计算
-            terminated: 是否为真正的环境终止 (vs 时间截断)
+            terminated: 是否为真正的环境终止 (vs 时间截断) — 必须关键字指定
+
+        Raises:
+            RuntimeError: 缓冲区已满时继续写入
         """
+        if self.full:
+            raise RuntimeError(
+                f"RolloutBuffer 已满 (容量={self.buffer_size})，"
+                f"请先调用 update() 清空缓冲区再收集新数据。"
+            )
         idx = self.pos
         self.states[idx] = state
         self.actions[idx] = action

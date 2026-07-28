@@ -44,13 +44,23 @@ class PPOAgent(BaseAgent):
         agent = PPOAgent(state_dim=4, n_actions=2)
         obs, _ = env.reset()
         for step in range(agent.n_steps):
-            action = agent.act(obs)             # 存储 state/action/log_prob/value
-            next_obs, reward, done, _ = env.step(action)
-            agent.store(reward, done)            # 存储 reward/done, 完成 transition
+            action = agent.act(obs)                    # 暂存 state/action/log_prob/value
+            next_obs, reward, terminated, truncated, _ = env.step(action)
+            done = terminated or truncated
+            # 计算 next_value (必须在 env.reset() 之前!)
+            with torch.no_grad():
+                if terminated:
+                    next_value = 0.0
+                else:
+                    next_obs_t = torch.as_tensor(next_obs, dtype=torch.float32,
+                                                 device=agent.device).unsqueeze(0)
+                    next_value = agent.network.get_value(next_obs_t).item()
+            agent.store(reward, done, terminated, next_value)  # 完整 transition
             obs = next_obs
             if done:
                 obs, _ = env.reset()
-        metrics = agent.update(last_obs=obs)     # 使用收集的数据更新网络
+            if agent.buffer.full:                          # 缓冲区满时更新
+                metrics = agent.update()
     """
 
     def __init__(
@@ -317,31 +327,6 @@ class PPOAgent(BaseAgent):
         early_stopped: bool = False
 
         for epoch in range(self.n_epochs):
-            # ---- Pre-epoch KL check: 在更新前计算全局 KL ----
-            if self.target_kl is not None:
-                all_states = torch.as_tensor(
-                    self.buffer.states[:n], dtype=torch.float32, device=self.device
-                )
-                all_old_log_probs = torch.as_tensor(
-                    self.buffer.log_probs[:n], dtype=torch.float32, device=self.device
-                )
-                all_actions = torch.as_tensor(
-                    self.buffer.actions[:n], dtype=torch.int64, device=self.device
-                )
-                with torch.no_grad():
-                    all_logits, _ = self.network.forward(all_states)
-                    all_new_log_probs = torch.log_softmax(all_logits, dim=-1)
-                    action_log_probs = all_new_log_probs.gather(
-                        1, all_actions.unsqueeze(-1)
-                    ).squeeze(-1)
-                    epoch_kl = (
-                        (all_old_log_probs - action_log_probs).pow(2) / 2.0
-                    ).mean().item()
-
-                if epoch_kl > self.target_kl:
-                    early_stopped = True
-                    break
-
             # ---- 每 epoch 重新获取 shuffled minibatches ----
             for batch in self.buffer.get_minibatches(
                 batch_size=self.batch_size, shuffle=True
@@ -443,7 +428,8 @@ class PPOAgent(BaseAgent):
                 entropy_loss: torch.Tensor = -entropy.mean()
 
                 # ---- 5j: 总损失 ----
-                # L_t(θ) = L^CLIP(θ) + c1 * L^VF(θ) + c2 * H(π)
+                # L(θ) = L^CLIP(θ) + c1 * L^VF(θ) - c2 * H(π)
+                #   (entropy_loss = -entropy.mean(), 所以 +c2*entropy_loss = -c2*H(π))
                 #   - L^CLIP: 策略损失（最大化期望回报）
                 #   - c1 * L^VF: 价值损失（最小化值函数误差）
                 #   - c2 * (-H(π)): 熵奖励（鼓励探索）
@@ -453,16 +439,33 @@ class PPOAgent(BaseAgent):
                     + self.c2 * entropy_loss
                 )
 
-                # ---- 5k: 反向传播 ----
-                # 清除上一次的梯度
-                self.optimizer.zero_grad()
+                # ---- 5k: 记录 pre-step 指标 (更新前) ----
+                # 近似 KL 散度: E[log π_new - log π_old]
+                # 使用 unbiased estimator: kl ≈ mean(ratio - 1 - log(ratio))
+                with torch.no_grad():
+                    approx_kl: torch.Tensor = (
+                        (ratio - 1.0) - torch.log(ratio)
+                    ).mean()
 
-                # 反向传播计算梯度
+                    # 裁剪分数: 被裁剪到 [1-ε, 1+ε] 范围外的比率占比
+                    clip_mask: torch.Tensor = (
+                        (ratio < 1.0 - self.clip_epsilon)
+                        | (ratio > 1.0 + self.clip_epsilon)
+                    ).float()
+                    clip_fraction: torch.Tensor = clip_mask.mean()
+
+                # ---- 记录 minibatch 级指标 (pre-step 快照) ----
+                policy_loss_list.append(float(policy_loss.item()))
+                value_loss_list.append(float(value_loss.item()))
+                entropy_loss_list.append(float(entropy_loss.item()))
+                approx_kl_list.append(float(approx_kl.item()))
+                clip_fractions_list.append(float(clip_fraction.item()))
+
+                # ---- 5l: 反向传播 ----
+                self.optimizer.zero_grad()
                 total_loss.backward()
 
-                # ---- 5l: 梯度裁剪 ----
-                # 将所有参数的梯度 L2 范数限制在 max_grad_norm 以内
-                # 防止梯度爆炸，尤其在 RNN 或深层网络中
+                # ---- 5m: 梯度裁剪 ----
                 torch.nn.utils.clip_grad_norm_(
                     self.network.parameters(),
                     self.max_grad_norm,
@@ -471,34 +474,33 @@ class PPOAgent(BaseAgent):
                 # 执行一步 Adam 更新
                 self.optimizer.step()
 
-                # ---- 5m: 指标记录 ----
-                # 近似 KL 散度 (Kullback-Leibler Divergence)
-                # 衡量新旧策略之间的差异程度
-                # 方法 1: 二阶近似 KL(q||p) ≈ 0.5 * mean((log q - log p)^2)
-                approx_kl: torch.Tensor = (
-                    (new_log_probs - mb_old_log_probs).pow(2) / 2.0
-                ).mean()
-
-                # 方法 2 (可选): 无偏估计
-                # approx_kl = (ratio - 1.0 - ratio.log()).mean()
-
-                # 裁剪分数: 被裁剪到 [1-ε, 1+ε] 范围外的比率占比
-                # 衡量当前 minibatch 中有多少比例的更新被限制
-                with torch.no_grad():
-                    clip_mask: torch.Tensor = (
-                        (ratio < 1.0 - self.clip_epsilon)
-                        | (ratio > 1.0 + self.clip_epsilon)
-                    ).float()  # shape: (batch_size,)
-                    clip_fraction: torch.Tensor = clip_mask.mean()
-
-                # ---- 记录 minibatch 级指标 ----
-                policy_loss_list.append(float(policy_loss.item()))
-                value_loss_list.append(float(value_loss.item()))
-                entropy_loss_list.append(float(entropy_loss.item()))
-                approx_kl_list.append(float(approx_kl.item()))
-                clip_fractions_list.append(float(clip_fraction.item()))
-
             epochs_completed = epoch + 1
+
+            # ---- Post-epoch KL check: 更新后检查全局 KL ----
+            if self.target_kl is not None:
+                all_states = torch.as_tensor(
+                    self.buffer.states[:n], dtype=torch.float32, device=self.device
+                )
+                all_old_log_probs = torch.as_tensor(
+                    self.buffer.log_probs[:n], dtype=torch.float32, device=self.device
+                )
+                all_actions = torch.as_tensor(
+                    self.buffer.actions[:n], dtype=torch.int64, device=self.device
+                )
+                with torch.no_grad():
+                    all_logits, _ = self.network.forward(all_states)
+                    all_new_log_probs = torch.log_softmax(all_logits, dim=-1)
+                    action_log_probs = all_new_log_probs.gather(
+                        1, all_actions.unsqueeze(-1)
+                    ).squeeze(-1)
+                    # 使用 unbiased KL estimator
+                    log_ratio = action_log_probs - all_old_log_probs
+                    ratio_full = torch.exp(log_ratio)
+                    epoch_kl = ((ratio_full - 1.0) - log_ratio).mean().item()
+
+                if epoch_kl > self.target_kl:
+                    early_stopped = True
+                    break
 
         # ----------------------------------------------------------------
         # Step 6: 计算解释方差 (Explained Variance)
@@ -525,9 +527,9 @@ class PPOAgent(BaseAgent):
             )  # shape (n,)
 
             ev_numerator: torch.Tensor = torch.var(
-                returns_all_tensor - old_values_tensor
+                returns_all_tensor - old_values_tensor, correction=0
             )
-            ev_denominator: torch.Tensor = torch.var(returns_all_tensor) + 1e-8
+            ev_denominator: torch.Tensor = torch.var(returns_all_tensor, correction=0) + 1e-8
             explained_variance: torch.Tensor = 1.0 - ev_numerator / ev_denominator
 
         # ----------------------------------------------------------------
