@@ -309,19 +309,24 @@ class StochasticGridWorld(GridWorld):
     """
 
     def get_transition_matrix(self) -> np.ndarray:
-        """包含 slip 概率的转移矩阵"""
+        """包含 slip 概率的转移矩阵。
+
+        转移模型与 step() 一致:
+        - 以概率 slip_prob 在所有 n_actions 中均匀随机选择
+        - 以概率 1-slip_prob 执行指定动作
+        """
         if self.slip_prob == 0:
             return super().get_transition_matrix()
 
-        P = np.zeros((self.n_states, self.n_actions, self.n_states))
-        for s in range(self.n_states):
-            for a in range(self.n_actions):
-                # 主要动作：1 - slip_prob
-                P_det = super().get_transition_matrix()  # 确定性转移
-                P[s, a] = (1 - self.slip_prob) * P_det[s, a]
+        nA = self.n_actions
+        P_det = super().get_transition_matrix()  # 确定性转移 (只计算一次)
+        P = np.zeros((self.n_states, nA, self.n_states))
 
-                # 随机其他动作：均分 slip_prob
-                other_actions = [oa for oa in range(self.n_actions) if oa != a]
-                for oa in other_actions:
-                    P[s, a] += (self.slip_prob / (self.n_actions - 1)) * P_det[s, oa]
+        for s in range(self.n_states):
+            for a in range(nA):
+                # 指定动作: 1 - p + p/nA
+                P[s, a] = (1 - self.slip_prob) * P_det[s, a]
+                # 所有动作 (包括指定动作): 各 p/nA
+                for oa in range(nA):
+                    P[s, a] += (self.slip_prob / nA) * P_det[s, oa]
         return P
