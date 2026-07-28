@@ -246,73 +246,36 @@ def test_all_agent_imports():
 
 
 def test_a2c_n_step_returns():
-    """Test A2C n-step return computation with known values."""
-    from rl_course.agents.a2c import A2CAgent
-    import torch
-    import numpy as np
+    """Test compute_n_step_returns with known values."""
+    from rl_course.agents.a2c import compute_n_step_returns
 
-    agent = A2CAgent(state_dim=2, n_actions=2, gamma=0.9, lr=1e-3, n_steps=5)
+    # 2-step non-terminal rollout
+    rewards = [1.0, 2.0]
+    dones = [False, False]
+    terminated_list = [False, False]
+    next_values = [3.0, 5.0]  # V(s1)=3, V(s2)=5
+    gamma = 0.9
 
-    # Simulate a 2-step non-terminal rollout
-    agent.states = [torch.zeros(2), torch.zeros(2)]
-    agent.actions = [0, 0]
-    agent.rewards = [1.0, 2.0]
-    agent.dones = [False, False]
-    agent.terminated_list = [False, False]
-    agent.next_values = [3.0, 5.0]  # V(s1)=3, V(s2)=5
-
-    # Manually trigger reward computation
-    T = 2
-    returns = np.zeros(T, dtype=np.float32)
-    G = agent.next_values[-1]  # = 5.0 (bootstrap from last state)
-    for t in reversed(range(T)):
-        if agent.dones[t]:
-            mask = 1.0 - float(agent.terminated_list[t])
-            G = agent.rewards[t] + agent.gamma * agent.next_values[t] * mask
-        else:
-            G = agent.rewards[t] + agent.gamma * G
-        returns[t] = G
+    returns = compute_n_step_returns(rewards, dones, terminated_list, next_values, gamma)
 
     # R1 = 2 + 0.9*5 = 6.5
     # R0 = 1 + 0.9*6.5 = 6.85
     assert abs(returns[1] - 6.5) < 1e-5, f"Expected R1=6.5, got {returns[1]}"
     assert abs(returns[0] - 6.85) < 1e-5, f"Expected R0=6.85, got {returns[0]}"
 
-    # Clean up
-    agent.states.clear()
-    agent.actions.clear()
-    agent.rewards.clear()
-    agent.dones.clear()
-    agent.terminated_list.clear()
-    agent.next_values.clear()
-
 
 def test_a2c_mid_rollout_terminated():
-    """Test A2C mid-rollout terminated boundary."""
-    from rl_course.agents.a2c import A2CAgent
-    import torch
-    import numpy as np
-
-    agent = A2CAgent(state_dim=2, n_actions=2, gamma=0.9, lr=1e-3, n_steps=5)
+    """Test compute_n_step_returns with mid-rollout terminated boundary."""
+    from rl_course.agents.a2c import compute_n_step_returns
 
     # Episode 1: r0, r1(terminated). Episode 2: r2, r3
-    agent.states = [torch.zeros(2)] * 4
-    agent.actions = [0] * 4
-    agent.rewards = [1.0, 2.0, 3.0, 4.0]
-    agent.dones = [False, True, False, False]
-    agent.terminated_list = [False, True, False, False]
-    agent.next_values = [10.0, 0.0, 20.0, 30.0]  # term at idx1→next_value=0
+    rewards = [1.0, 2.0, 3.0, 4.0]
+    dones = [False, True, False, False]
+    terminated_list = [False, True, False, False]
+    next_values = [10.0, 0.0, 20.0, 30.0]
+    gamma = 0.9
 
-    T = 4
-    returns = np.zeros(T, dtype=np.float32)
-    G = agent.next_values[-1]  # 30
-    for t in reversed(range(T)):
-        if agent.dones[t]:
-            mask = 1.0 - float(agent.terminated_list[t])
-            G = agent.rewards[t] + agent.gamma * agent.next_values[t] * mask
-        else:
-            G = agent.rewards[t] + agent.gamma * G
-        returns[t] = G
+    returns = compute_n_step_returns(rewards, dones, terminated_list, next_values, gamma)
 
     # R3 = 4 + 0.9*30 = 31
     # R2 = 3 + 0.9*31 = 30.9
@@ -322,9 +285,6 @@ def test_a2c_mid_rollout_terminated():
     assert abs(returns[2] - 30.9) < 1e-4, f"R2={returns[2]}"
     assert abs(returns[1] - 2.0) < 1e-4, f"R1={returns[1]} (should not include ep2)"
     assert abs(returns[0] - 2.8) < 1e-4, f"R0={returns[0]}"
-
-    agent.states.clear(); agent.actions.clear(); agent.rewards.clear()
-    agent.dones.clear(); agent.terminated_list.clear(); agent.next_values.clear()
 
 
 def test_gridworld_default_goal():

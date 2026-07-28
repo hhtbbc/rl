@@ -67,7 +67,7 @@ class PPOAgent(BaseAgent):
         self,
         state_dim: int,
         n_actions: int,
-        hidden_dims: List[int] = [64, 64],
+        hidden_dims: Optional[List[int]] = None,
         gamma: float = 0.99,
         gae_lambda: float = 0.95,
         clip_epsilon: float = 0.2,
@@ -106,7 +106,7 @@ class PPOAgent(BaseAgent):
         # ==================== 超参数 ====================
         self.state_dim: int = state_dim
         self.n_actions: int = n_actions
-        self.hidden_dims: List[int] = hidden_dims
+        self.hidden_dims: List[int] = hidden_dims if hidden_dims is not None else [64, 64]
         self.gamma: float = gamma
         self.gae_lambda: float = gae_lambda
         self.clip_epsilon: float = clip_epsilon
@@ -166,8 +166,9 @@ class PPOAgent(BaseAgent):
             "policy_loss": [],
             "value_loss": [],
             "entropy_loss": [],
-            "approx_kl": [],
-            "clip_fraction": [],
+            "pre_step_approx_kl": [],
+            "pre_step_clip_fraction": [],
+            "final_full_batch_kl": [],
             "explained_variance": [],
         }
 
@@ -274,7 +275,7 @@ class PPOAgent(BaseAgent):
     # ======================================================================
     # update() — PPO 核心更新逻辑
     # ======================================================================
-    def update(self) -> Dict[str, float]:
+    def update(self) -> Dict[str, object]:
         """
         执行一次完整的 PPO 更新。
 
@@ -282,7 +283,8 @@ class PPOAgent(BaseAgent):
             1. 计算 GAE 优势估计和折扣回报 (使用 buffer 中存储的 next_values)
             2. 全量标准化优势并写回 buffer
             3. 多轮 minibatch 优化:
-               - 每个 epoch 开始时检查全局 KL，超阈值则提前终止
+               - 每个 epoch 完成后检查全局 KL (post-epoch full-batch KL)
+               - 超阈值则提前终止剩余 epochs
                - Clipped Surrogate Objective
                - Clipped Value Loss
                - 熵正则项
@@ -290,7 +292,9 @@ class PPOAgent(BaseAgent):
             4. 跟踪指标
 
         Returns:
-            metrics dict
+            metrics dict with pre-step snapshots (pre_step_approx_kl,
+            pre_step_clip_fraction) and post-epoch full-batch KL
+            (final_full_batch_kl).
         """
         # ---- Step 1: 计算 GAE ----
         # next_values 已在 store() 时存入 buffer (计算时机在 env.reset() 之前)
@@ -531,8 +535,11 @@ class PPOAgent(BaseAgent):
             ev_numerator: torch.Tensor = torch.var(
                 returns_all_tensor - old_values_tensor, correction=0
             )
-            ev_denominator: torch.Tensor = torch.var(returns_all_tensor, correction=0) + 1e-8
-            explained_variance: torch.Tensor = 1.0 - ev_numerator / ev_denominator
+            ev_denominator: torch.Tensor = torch.var(returns_all_tensor, correction=0)
+            if ev_denominator < 1e-8:
+                explained_variance = float('nan')  # undefined when returns have ~zero variance
+            else:
+                explained_variance = float((1.0 - ev_numerator / ev_denominator).item())
 
         # ----------------------------------------------------------------
         # Step 7: 汇总指标
@@ -554,7 +561,7 @@ class PPOAgent(BaseAgent):
             "pre_step_clip_fraction": (
                 float(np.mean(clip_fractions_list)) if clip_fractions_list else 0.0
             ),
-            "explained_variance": float(explained_variance.item()),
+            "explained_variance": explained_variance,
             "n_updates": n_updates,
             "epochs_completed": epochs_completed,
             "early_stopped": early_stopped,

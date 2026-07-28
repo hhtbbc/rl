@@ -23,9 +23,8 @@ class TabularMCAgent(BaseAgent):
     使用 ε-greedy 探索保证所有状态-动作对被持续访问。
     适用于 episodic 环境。
 
-    注意: 算法名称中的 "MC Control" 特指 First-Visit MC 控制。
-    算法使用 ε-greedy 策略（非 Exploring Starts），
-    通过 ε-soft 策略保证持续探索。
+    注意: 这不是 MC-ES (Exploring Starts)。算法使用 ε-greedy 策略
+    （非从所有状态-动作对出发），通过 ε-soft 策略保证持续探索。
 
     Args:
         n_states: 状态数量
@@ -58,10 +57,13 @@ class TabularMCAgent(BaseAgent):
         # 确定性策略：π(s) = argmax_a Q(s, a)
         self.policy = np.zeros(n_states, dtype=np.int32)
 
+        # 独立的随机数生成器
+        self.rng = np.random.RandomState(seed)
+
     def act(self, obs: int, train: bool = True) -> int:
         """ε-greedy 动作选择"""
-        if train and np.random.rand() < self.epsilon:
-            return np.random.randint(self.n_actions)
+        if train and self.rng.rand() < self.epsilon:
+            return self.rng.randint(self.n_actions)
         return int(np.argmax(self.Q[obs]))
 
     def update(self, episode: List[Tuple[int, int, float]]) -> Dict[str, float]:

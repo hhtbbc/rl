@@ -135,8 +135,13 @@ class GridWorld:
         if options and "start_state" in options:
             start_state = int(options["start_state"])
             if start_state not in self._state_to_pos:
-                raise ValueError(f"Invalid start_state: {start_state}")
-            self.agent_pos = list(self._state_to_pos[start_state])
+                raise ValueError(f"Invalid start_state index: {start_state}")
+            pos = self._state_to_pos[start_state]
+            if pos == self.goal_pos:
+                raise ValueError(f"start_state={start_state} must not be the goal")
+            if pos in self.blocked_positions:
+                raise ValueError(f"start_state={start_state} must not be blocked")
+            self.agent_pos = list(pos)
         else:
             self.agent_pos = list(self.start_pos)
 
@@ -159,6 +164,9 @@ class GridWorld:
               terminated=True → 未来价值为 0
               truncated=True  → 仍需从最终状态 bootstrap
         """
+        if not (0 <= action < self.n_actions):
+            raise ValueError(f"Invalid action {action}, must be in [0, {self.n_actions})")
+
         if self.slip_prob > 0 and self.rng.rand() < self.slip_prob:
             # 随机选择一个动作（slippery 转移）
             action = self.rng.randint(0, self.n_actions)

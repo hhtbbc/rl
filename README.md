@@ -138,7 +138,7 @@ rl/
 │   └── visualization/           # 绑图和视频生成
 ├── exercises/                   # 练习题 (待补充)
 ├── solutions/                   # 参考答案 (待补充)
-├── tests/                       # 单元测试 (12 个)
+├── tests/                       # 单元测试 (18 个)
 ├── scripts/                     # 辅助脚本 (notebook 验证等)
 ├── outputs/                     # 输出文件
 │   ├── figures/                 # 图片
