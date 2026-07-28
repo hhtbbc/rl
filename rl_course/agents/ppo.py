@@ -80,6 +80,7 @@ class PPOAgent(BaseAgent):
         max_grad_norm: float = 0.5,
         target_kl: Optional[float] = None,
         device: str = "cpu",
+        seed: Optional[int] = None,
     ):
         """
         Args:
@@ -482,31 +483,30 @@ class PPOAgent(BaseAgent):
 
             epochs_completed = epoch + 1
 
-            # ---- Post-epoch KL check: 更新后检查全局 KL ----
-            if self.target_kl is not None:
-                all_states = torch.as_tensor(
-                    self.buffer.states[:n], dtype=torch.float32, device=self.device
-                )
-                all_old_log_probs = torch.as_tensor(
-                    self.buffer.log_probs[:n], dtype=torch.float32, device=self.device
-                )
-                all_actions = torch.as_tensor(
-                    self.buffer.actions[:n], dtype=torch.int64, device=self.device
-                )
-                with torch.no_grad():
-                    all_logits, _ = self.network.forward(all_states)
-                    all_new_log_probs = torch.log_softmax(all_logits, dim=-1)
-                    action_log_probs = all_new_log_probs.gather(
-                        1, all_actions.unsqueeze(-1)
-                    ).squeeze(-1)
-                    # 使用 unbiased KL estimator
-                    log_ratio = action_log_probs - all_old_log_probs
-                    ratio_full = torch.exp(log_ratio)
-                    epoch_kl = ((ratio_full - 1.0) - log_ratio).mean().item()
+            # ---- Post-epoch KL: always compute for monitoring ----
+            all_states = torch.as_tensor(
+                self.buffer.states[:n], dtype=torch.float32, device=self.device
+            )
+            all_old_log_probs = torch.as_tensor(
+                self.buffer.log_probs[:n], dtype=torch.float32, device=self.device
+            )
+            all_actions = torch.as_tensor(
+                self.buffer.actions[:n], dtype=torch.int64, device=self.device
+            )
+            with torch.no_grad():
+                all_logits, _ = self.network.forward(all_states)
+                all_new_log_probs = torch.log_softmax(all_logits, dim=-1)
+                action_log_probs = all_new_log_probs.gather(
+                    1, all_actions.unsqueeze(-1)
+                ).squeeze(-1)
+                log_ratio = action_log_probs - all_old_log_probs
+                ratio_full = torch.exp(log_ratio)
+                epoch_kl = ((ratio_full - 1.0) - log_ratio).mean().item()
 
-                if epoch_kl > self.target_kl:
-                    early_stopped = True
-                    break
+            # target_kl only controls early stopping decision
+            if self.target_kl is not None and epoch_kl > self.target_kl:
+                early_stopped = True
+                break
 
         # ----------------------------------------------------------------
         # Step 6: 计算解释方差 (Explained Variance)
@@ -565,7 +565,7 @@ class PPOAgent(BaseAgent):
             "n_updates": n_updates,
             "epochs_completed": epochs_completed,
             "early_stopped": early_stopped,
-            "final_full_batch_kl": epoch_kl if self.target_kl is not None and epochs_completed > 0 else None,
+            "final_full_batch_kl": epoch_kl if epochs_completed > 0 else None,
         }
 
         # 记录到历史

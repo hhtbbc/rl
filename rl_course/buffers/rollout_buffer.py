@@ -33,6 +33,7 @@ class RolloutBuffer:
         self.gamma = gamma
         self.gae_lambda = gae_lambda
         self.device = torch.device(device)
+        self.rng = np.random.RandomState()
 
         # 预分配 numpy 数组
         self.states = np.zeros((buffer_size, state_dim), dtype=np.float32)
@@ -152,7 +153,7 @@ class RolloutBuffer:
         indices = np.arange(n)
 
         if shuffle:
-            np.random.shuffle(indices)
+            self.rng.shuffle(indices)
 
         batches = []
         for start in range(0, n, batch_size):

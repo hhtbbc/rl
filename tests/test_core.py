@@ -358,3 +358,55 @@ def test_mc_agent_first_visit():
     assert agent._returns_count[1, 1] == 1
 
     assert abs(metrics["episode_return"] - 6.0) < 1e-5
+
+
+def test_gae_exact_values():
+    """Test GAE computation with hand-calculated values."""
+    from rl_course.buffers.rollout_buffer import RolloutBuffer
+    import numpy as np
+
+    buf = RolloutBuffer(buffer_size=3, state_dim=1, gamma=0.9, gae_lambda=0.95)
+    buf.add(np.array([1.0]), 0, 1.0, False, -0.5, 0.8, next_value=1.5, terminated=False)
+    buf.add(np.array([2.0]), 1, 2.0, False, -0.3, 1.2, next_value=2.0, terminated=False)
+    buf.add(np.array([3.0]), 0, -1.0, True, -0.1, 0.5, next_value=0.0, terminated=True)
+
+    buf.compute_gae()
+    returns = buf.returns[:3]
+    advantages = buf.advantages[:3]
+
+    # R2 = -1 + 0.9*0*1 = -1 (terminated, no bootstrap)
+    # δ2 = -1 + 0.9*0*1 - 0.5 = -1.5 (bootstrap_mask=0)
+    # A2 = δ2 = -1.5
+    assert abs(returns[2] + 1.0) < 1e-4, f"R2={returns[2]}"
+    assert abs(advantages[2] + 1.5) < 1e-4, f"A2={advantages[2]}"
+    assert buf.returns.shape == (3,)
+    assert buf.advantages.shape == (3,)
+
+
+def test_replay_buffer_empty_sample_guard():
+    """Test ReplayBuffer behavior with insufficient samples."""
+    from rl_course.buffers.replay_buffer import ReplayBuffer
+    import numpy as np
+
+    buf = ReplayBuffer(capacity=10, state_dim=2)
+    # Empty buffer: size is 0
+    assert len(buf) == 0
+
+
+def test_a2c_returns_input_validation():
+    """Test compute_n_step_returns input validation."""
+    from rl_course.agents.a2c import compute_n_step_returns
+    import numpy as np
+    import pytest
+
+    # Empty input
+    result = compute_n_step_returns([], [], [], [], 0.9)
+    assert len(result) == 0
+
+    # Length mismatch
+    with pytest.raises(ValueError, match="Length mismatch"):
+        compute_n_step_returns([1.0, 2.0], [False], [False, False], [1.0, 2.0], 0.9)
+
+    # inconsistent flags
+    with pytest.raises(ValueError, match="inconsistent"):
+        compute_n_step_returns([1.0], [False], [True], [1.0], 0.9)

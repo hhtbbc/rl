@@ -24,6 +24,7 @@ class ReplayBuffer:
     def __init__(self, capacity: int = 10000, state_dim: int = 1, device: str = "cpu"):
         self.capacity = capacity
         self.device = torch.device(device)
+        self.rng = np.random.RandomState()
 
         # 预分配 numpy 数组（比 list 更高效）
         self.states = np.zeros((capacity, state_dim), dtype=np.float32)
@@ -82,7 +83,7 @@ class ReplayBuffer:
         Returns:
             (states, actions, rewards, next_states, dones, terminated) — torch.Tensor
         """
-        indices = np.random.randint(0, self.size, size=batch_size)
+        indices = self.rng.randint(0, self.size, size=batch_size)
 
         states = torch.FloatTensor(self.states[indices]).to(self.device)
         actions = torch.LongTensor(self.actions[indices]).to(self.device)

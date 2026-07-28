@@ -42,6 +42,19 @@ def compute_n_step_returns(
         returns: shape (T,) numpy float32 array
     """
     T = len(rewards)
+    if T == 0:
+        return np.empty(0, dtype=np.float32)
+    if not (T == len(dones) == len(terminated_list) == len(next_values)):
+        raise ValueError(
+            f"Length mismatch: rewards={T}, dones={len(dones)}, "
+            f"terminated={len(terminated_list)}, next_values={len(next_values)}"
+        )
+    if not 0.0 <= gamma <= 1.0:
+        raise ValueError(f"gamma={gamma} must be in [0, 1]")
+    for t in range(T):
+        if terminated_list[t] and not dones[t]:
+            raise ValueError(f"t={t}: terminated=True but done=False (inconsistent)")
+
     returns = np.zeros(T, dtype=np.float32)
 
     # 初始化 G: rollout 末尾非 boundary → bootstrap from last next_value
