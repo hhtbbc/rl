@@ -40,8 +40,8 @@ runs/
 .DS_Store
 Thumbs.db
 
-# uv
-uv.lock
+# uv (lock file SHOULD be committed for reproducibility)
+# uv.lock is committed — do NOT ignore it
 
 # Environment
 .env

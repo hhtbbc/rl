@@ -217,26 +217,32 @@ class PPOAgent(BaseAgent):
     # ======================================================================
     # store() — 完成 transition 存储
     # ======================================================================
-    def store(self, reward: float, done: bool, terminated: bool = False) -> None:
+    def store(
+        self, reward: float, done: bool, terminated: bool, next_value: float
+    ) -> None:
         """
         存储一步环境反馈，完成 transition 记录。
 
-        与 act() 配对使用:
+        调用顺序:
             1. act(obs)              — 获取动作，暂存 state/action/log_prob/value
-            2. env.step(action)       — 执行动作，获得 reward, terminated, truncated
-            3. store(r, done, term)   — 补充 reward/done/terminated，写入缓冲区
+            2. env.step(action)       — 执行动作, 获得 reward, terminated, truncated
+            3. 计算 next_value = critic(next_obs) if not terminated else 0.0
+               (必须在 env.reset() 之前计算, 确保截断时使用最终状态)
+            4. store(r, done, term, next_value) — 写入缓冲区
+            5. if done: obs, _ = env.reset()
 
         Args:
             reward: 环境返回的即时奖励
-            done: 当前 episode 是否结束 (terminated or truncated)
+            done: episode 是否结束 (terminated or truncated)
             terminated: 是否为真正的环境终止 (vs 时间截断)
-                         True → GAE 中不 bootstrap（未来价值为 0）
-                         False + done=True → 时间截断，GAE 中仍需 bootstrap
+            next_value: V(s_{t+1}) — 下一状态的价值估计
+                         terminated=True → 0.0
+                         truncated=True → V(final_obs) (截断前最终状态)
+                         正常步 → V(next_state)
         """
         if self._last_state is None:
             raise RuntimeError(
                 "store() 被调用前必须先调用 act()。"
-                "调用顺序应为: act(obs) -> env.step(action) -> store(reward, done)"
             )
 
         # 将完整的 transition 写入缓冲区
@@ -247,6 +253,7 @@ class PPOAgent(BaseAgent):
             done,
             self._last_log_prob,
             self._last_value,
+            next_value,
             terminated=terminated,
         )
 
@@ -256,97 +263,44 @@ class PPOAgent(BaseAgent):
     # ======================================================================
     # update() — PPO 核心更新逻辑
     # ======================================================================
-    def update(self, last_obs: Optional[np.ndarray] = None) -> Dict[str, float]:
+    def update(self) -> Dict[str, float]:
         """
         执行一次完整的 PPO 更新。
 
         更新步骤:
-            1. 获取最后状态的价值（用于 GAE 引导）
-            2. 计算 GAE 优势估计和折扣回报
-            3. 标准化优势值
-            4. 多轮 minibatch 优化:
-               - 计算 Clipped Surrogate Objective
-               - 计算 Clipped Value Loss
-               - 计算熵正则项
+            1. 计算 GAE 优势估计和折扣回报 (使用 buffer 中存储的 next_values)
+            2. 全量标准化优势并写回 buffer
+            3. 多轮 minibatch 优化:
+               - 每个 epoch 开始时检查全局 KL，超阈值则提前终止
+               - Clipped Surrogate Objective
+               - Clipped Value Loss
+               - 熵正则项
                - 反向传播 + 梯度裁剪
-            5. 跟踪指标（KL 散度、裁剪比例、解释方差等）
-            6. 清空缓冲区
-
-        Args:
-            last_obs: 收集完 n_steps 步后环境的当前观测（即 s_{n+1}）。
-                      用于 GAE 最后一步的 bootstrapping 价值 V(s_{n+1})。
-                      如果为 None，假设最后一步为终止状态（V=0）。
+            4. 跟踪指标
 
         Returns:
-            包含平均损失和指标的字典:
-            - policy_loss:  策略裁剪损失
-            - value_loss:   价值函数损失（裁剪后）
-            - entropy_loss: 熵损失（取负后，-c2*entropy 鼓励探索）
-            - approx_kl:    平均近似 KL 散度
-            - clip_fraction: 被裁剪的比率占比（0~1）
-            - explained_variance: 解释方差，衡量价值函数拟合质量
-            - epochs_completed: 实际完成的 epoch 数
-            - early_stopped: 是否因 KL 阈值提前停止
+            metrics dict
         """
-        # ----------------------------------------------------------------
-        # Step 1: 计算 GAE 需要的最后一步价值
-        # ----------------------------------------------------------------
-        # last_obs 是环境执行完 n_steps 步后的状态 s_{n+1}
-        # 它的价值 V(s_{n+1}) 用于递推计算 GAE 最后一步的 TD 残差:
-        #   δ_{n-1} = r_{n-1} + γ * V(s_n) * (1 - done_{n-1}) - V(s_{n-1})
-        # 当 s_{n+1} 是终止状态时，V=0 是 bootstrap 的自然选择
-        last_value: float = 0.0
-        if last_obs is not None:
-            # ---- 将 last_obs 转换为张量 ----
-            last_obs_tensor: torch.Tensor = (
-                torch.as_tensor(last_obs, dtype=torch.float32, device=self.device)
-                .unsqueeze(0)
-            )  # shape: (1, state_dim)
+        # ---- Step 1: 计算 GAE ----
+        # next_values 已在 store() 时存入 buffer (计算时机在 env.reset() 之前)
+        self.buffer.compute_gae()
 
-            with torch.no_grad():
-                _, _, last_val_tensor = self.network.get_action(last_obs_tensor)
-                last_value = float(last_val_tensor.item())
-
-        # ----------------------------------------------------------------
-        # Step 2: 计算 GAE 优势估计和折扣回报
-        # ----------------------------------------------------------------
-        # GAE(γ, λ) 公式:
-        #   δ_t = r_t + γ * V(s_{t+1}) * (1 - done_t) - V(s_t)
-        #   A_t^GAE = Σ_{l=0}^{T-t-1} (γλ)^l * δ_{t+l}
-        #   G_t = A_t + V(s_t)  (折扣回报)
-        #
-        # λ=0 退化为 TD(0) (高偏差, 低方差)
-        # λ=1 退化为 Monte Carlo (低偏差, 高方差)
-        # λ=0.95 是常用的平衡值
-        self.buffer.compute_gae(last_value=last_value)
-
-        # ----------------------------------------------------------------
-        # Step 3: 准备全量数据并标准化优势
-        # ----------------------------------------------------------------
-        n: int = self.buffer.size  # 有效数据量（应等于 n_steps）
-
-        # ---- 从缓冲区取出优势做全局标准化 ----
-        advantages_np: np.ndarray = self.buffer.advantages[:n]  # shape (n,)
-        returns_np: np.ndarray = self.buffer.returns[:n]        # shape (n,)
-
-        # 转换为 PyTorch 张量进行标准化
-        advantages_tensor: torch.Tensor = torch.as_tensor(
+        # ---- Step 2: 全量标准化优势 ----
+        n: int = self.buffer.size
+        advantages_np = self.buffer.advantages[:n]
+        advantages_tensor = torch.as_tensor(
             advantages_np, dtype=torch.float32, device=self.device
-        )  # shape (n,)
+        )
+        # 使用 unbiased=False 避免单样本 NaN
+        if advantages_tensor.numel() > 1:
+            adv_mean = advantages_tensor.mean()
+            adv_std = advantages_tensor.std(unbiased=False)
+            normalized = (advantages_tensor - adv_mean) / (adv_std + 1e-8)
+            self.buffer.advantages[:n] = normalized.cpu().numpy()
 
-        # ---- 标准化优势 (Advantage Normalization) ----
-        adv_mean: torch.Tensor = advantages_tensor.mean()
-        adv_std: torch.Tensor = advantages_tensor.std()
-        normalized_advantages: torch.Tensor = (
-            advantages_tensor - adv_mean
-        ) / (adv_std + 1e-8)  # shape (n,)
-
-        # ---- 写回 buffer，确保 minibatch 读取到标准化后的优势 ----
-        self.buffer.advantages[:n] = normalized_advantages.cpu().numpy()
-
-        returns: torch.Tensor = torch.as_tensor(
-            returns_np, dtype=torch.float32, device=self.device
-        )  # shape (n,)
+        returns_tensor = torch.as_tensor(
+            self.buffer.returns[:n], dtype=torch.float32, device=self.device
+        )
 
         # ----------------------------------------------------------------
         # Step 4: PPO 多轮 Minibatch 更新
@@ -359,7 +313,35 @@ class PPOAgent(BaseAgent):
         value_loss_list: List[float] = []
         entropy_loss_list: List[float] = []
 
+        epochs_completed: int = 0
+        early_stopped: bool = False
+
         for epoch in range(self.n_epochs):
+            # ---- Pre-epoch KL check: 在更新前计算全局 KL ----
+            if self.target_kl is not None:
+                all_states = torch.as_tensor(
+                    self.buffer.states[:n], dtype=torch.float32, device=self.device
+                )
+                all_old_log_probs = torch.as_tensor(
+                    self.buffer.log_probs[:n], dtype=torch.float32, device=self.device
+                )
+                all_actions = torch.as_tensor(
+                    self.buffer.actions[:n], dtype=torch.int64, device=self.device
+                )
+                with torch.no_grad():
+                    all_logits, _ = self.network.forward(all_states)
+                    all_new_log_probs = torch.log_softmax(all_logits, dim=-1)
+                    action_log_probs = all_new_log_probs.gather(
+                        1, all_actions.unsqueeze(-1)
+                    ).squeeze(-1)
+                    epoch_kl = (
+                        (all_old_log_probs - action_log_probs).pow(2) / 2.0
+                    ).mean().item()
+
+                if epoch_kl > self.target_kl:
+                    early_stopped = True
+                    break
+
             # ---- 每 epoch 重新获取 shuffled minibatches ----
             for batch in self.buffer.get_minibatches(
                 batch_size=self.batch_size, shuffle=True
@@ -516,14 +498,7 @@ class PPOAgent(BaseAgent):
                 approx_kl_list.append(float(approx_kl.item()))
                 clip_fractions_list.append(float(clip_fraction.item()))
 
-                # ---- KL 散度早停 (标准 PPO: 仅停止当前 epoch) ----
-                # 如果 minibatch 的近似 KL 超过阈值，提前结束当前 epoch
-                # 注意: 只 break 内层 minibatch 循环，下一 epoch 重新 shuffle 后继续
-                if (
-                    self.target_kl is not None
-                    and float(approx_kl.item()) > self.target_kl
-                ):
-                    break
+            epochs_completed = epoch + 1
 
         # ----------------------------------------------------------------
         # Step 6: 计算解释方差 (Explained Variance)
@@ -577,6 +552,8 @@ class PPOAgent(BaseAgent):
             ),
             "explained_variance": float(explained_variance.item()),
             "n_updates": float(n_updates),
+            "epochs_completed": float(epochs_completed),
+            "early_stopped": float(early_stopped),
         }
 
         # 记录到历史

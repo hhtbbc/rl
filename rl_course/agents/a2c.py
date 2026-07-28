@@ -17,12 +17,15 @@ from rl_course.networks.mlp import ActorCriticNetwork
 
 class A2CAgent(BaseAgent):
     """
-    A2C (Advantage Actor-Critic) 智能体。
+    Single-environment n-step Advantage Actor-Critic。
 
-    架构特点：
-    - 共享特征提取器的 Actor-Critic 网络
-    - n-step 回报用于平衡偏差-方差权衡
-    - 熵奖励鼓励探索，防止过早收敛
+    注意: 这是单环境版本，用于教学。标准 A2C 使用多个同步环境并行采样。
+    本实现演示 n-step return、advantage、entropy bonus 等核心概念。
+
+    API:
+        action = agent.act(obs)     # 选择动作
+        agent.store(r, term, trunc) # 存储环境反馈
+        metrics = agent.update(next_obs) # n-step 更新
 
     Loss = L_policy + L_value - entropy_coef * H(pi)
     """
@@ -38,17 +41,6 @@ class A2CAgent(BaseAgent):
         entropy_coef: float = 0.01,
         device: str = "cpu",
     ):
-        """
-        Args:
-            state_dim: 状态空间维度
-            n_actions: 离散动作数量
-            hidden_dims: 共享特征提取器隐藏层维度列表
-            gamma: 折扣因子
-            lr: 学习率
-            n_steps: n-step 回报的步数
-            entropy_coef: 熵正则化系数
-            device: 设备 ("cpu" 或 "cuda")
-        """
         super().__init__(seed=None)
         self.state_dim = state_dim
         self.n_actions = n_actions
@@ -57,18 +49,32 @@ class A2CAgent(BaseAgent):
         self.entropy_coef = entropy_coef
         self.device = torch.device(device)
 
-        # Actor-Critic 网络：共享特征 + 策略头 + 价值头
         self.actor_critic = ActorCriticNetwork(
             state_dim, n_actions, hidden_dims
         ).to(self.device)
         self.optimizer = optim.Adam(self.actor_critic.parameters(), lr=lr)
 
-        # Rollout 缓存（存储 n_step 的经验）
-        self.states: List[torch.Tensor] = []   # 状态
-        self.actions: List[int] = []            # 动作
-        self.rewards: List[float] = []          # 奖励
-        self.dones: List[bool] = []             # episode 边界 (terminated or truncated)
-        self.terminated_list: List[bool] = []   # 真正的环境终止 (vs 时间截断)
+        # Rollout 缓存
+        self.states: List[torch.Tensor] = []
+        self.actions: List[int] = []
+        self.rewards: List[float] = []
+        self.dones: List[bool] = []             # episode 边界
+        self.terminated_list: List[bool] = []   # 真正终止
+
+    def store(
+        self, reward: float, terminated: bool, truncated: bool
+    ) -> None:
+        """
+        存储环境反馈。
+
+        Args:
+            reward: 即时奖励
+            terminated: 环境真正终止
+            truncated: 时间截断
+        """
+        self.rewards.append(reward)
+        self.terminated_list.append(terminated)
+        self.dones.append(terminated or truncated)
 
     def act(self, obs: np.ndarray, train: bool = True) -> int:
         """
@@ -175,19 +181,26 @@ class A2CAgent(BaseAgent):
             G = 0.0
 
         # 从后向前递归计算 n-step 回报
-        # R_t = r_t + gamma * (1 - done_t) * R_{t+1}
-        # done_t 是 episode 边界 (terminated or truncated), 都重置累积
+        # 使用 terminated (而非 done) 控制 bootstrap:
+        #   - terminated=True: G = r (不 bootstrap)
+        #   - terminated=False (包括 truncated): G = r + gamma * G (bootstrap)
+        # 注意: 这是教学简化。若 rollout 中间发生 truncation 且 env 已 reset，
+        # G 会跨 episode 边界传播。标准做法是保存 final_observation。
         returns = []
         for i in reversed(range(len(rewards))):
-            done = dones[i]
-            G = rewards[i] + self.gamma * G * (1.0 - done)
+            term = self.terminated_list[i]
+            G = rewards[i] + self.gamma * G * (1.0 - float(term))
             returns.insert(0, G)
         returns = torch.FloatTensor(returns).to(self.device)
 
         # 计算优势 A = R_t - V(s_t)
         advantages = returns - values
         # 归一化优势（减小方差，稳定训练）
-        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+        if advantages.numel() > 1:
+            advantages = (
+                (advantages - advantages.mean())
+                / (advantages.std(unbiased=False) + 1e-8)
+            )
 
         # ===============================================================
         # detach 优势：阻止策略梯度反向传播影响 Critic 和价值头。

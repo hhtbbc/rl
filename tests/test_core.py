@@ -183,11 +183,11 @@ def test_rollout_buffer():
     buf = RolloutBuffer(buffer_size=16, state_dim=4, gamma=0.99, gae_lambda=0.95)
 
     for i in range(16):
-        buf.add(np.ones(4) * i, 0, 1.0, i == 15, 0.5, 0.8)
+        buf.add(np.ones(4) * i, 0, 1.0, i == 15, 0.5, 0.8, next_value=0.0, terminated=(i == 15))
 
     assert len(buf) == 16
 
-    buf.compute_gae(last_value=0.0)
+    buf.compute_gae()
     assert buf.returns.shape == (16,)
     assert buf.advantages.shape == (16,)
 
