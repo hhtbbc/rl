@@ -45,7 +45,7 @@ def check_notebook_syntax(nb_path: Path) -> bool:
     return ok
 
 
-def validate_notebook(nb_path: Path, timeout: int = 600) -> bool:
+def validate_notebook(nb_path: Path, timeout: int = 600, env: dict = None) -> bool:
     """Execute a single notebook and return True if successful."""
     name = nb_path.name
     print(f"  Validating {name}...", end=" ", flush=True)
@@ -61,6 +61,7 @@ def validate_notebook(nb_path: Path, timeout: int = 600) -> bool:
             ],
             capture_output=True, text=True, timeout=timeout + 60,
             cwd=str(ROOT),
+            env=env,
         )
         if result.returncode == 0:
             print("PASS")
@@ -80,7 +81,7 @@ def validate_notebook(nb_path: Path, timeout: int = 600) -> bool:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--fast", action="store_true", help="Fast mode (skip long notebooks)")
+    parser.add_argument("--fast", action="store_true", help="Fast mode (set RL_COURSE_FAST_MODE=1, run all notebooks)")
     parser.add_argument("--timeout", type=int, default=600, help="Timeout per notebook (seconds)")
     parser.add_argument("--notebook", type=str, help="Validate a specific notebook")
     parser.add_argument("--syntax-only", action="store_true", help="Only check syntax, skip execution")
@@ -102,13 +103,11 @@ def main():
     if args.syntax_only:
         return 0 if syntax_fail == 0 else 1
 
-    # Notebooks that require long training (skip in fast mode)
-    long_notebooks = {"10_dqn.ipynb", "12_reinforce.ipynb", "14_actor_critic.ipynb",
-                      "15_a2c.ipynb", "20_ppo_from_scratch.ipynb"}
-
+    # Set up environment for fast mode
+    env = os.environ.copy()
     if args.fast:
-        notebooks = [nb for nb in notebooks if nb.name not in long_notebooks]
-        print(f"\n=== Phase 2: Fast Execution ({len(notebooks)} notebooks) ===")
+        env["RL_COURSE_FAST_MODE"] = "1"
+        print(f"\n=== Phase 2: Fast Execution ({len(notebooks)} notebooks, RL_COURSE_FAST_MODE=1) ===")
     else:
         print(f"\n=== Phase 2: Full Execution ({len(notebooks)} notebooks) ===")
 
@@ -117,7 +116,7 @@ def main():
 
     passed, failed = 0, 0
     for nb_path in notebooks:
-        if validate_notebook(nb_path, timeout=args.timeout):
+        if validate_notebook(nb_path, timeout=args.timeout, env=env):
             passed += 1
         else:
             failed += 1
