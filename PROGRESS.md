@@ -1,89 +1,65 @@
 # 项目进度记录
 
-## 完成状态
+## 状态
 
-- 开始日期：2026-07-23
-- 状态：核心内容已完成
+- 开始：2026-07-23
+- P0 修复完成：2026-07-28
+- 状态：核心质量已达可自学标准
 
-## 已完成
+## P0 修复记录 (2026-07-28)
 
-### 项目基础设施
-- [x] pyproject.toml（Python 3.11, uv 管理）
-- [x] .gitignore, .python-version
-- [x] 完整目录结构
-- [x] README.md（含 28 天路线、安装说明、常见问题）
-- [x] uv sync 成功
+### P0.1 — terminated/truncated 全项目重构
+- GridWorld.step() 改为 5-tuple `(obs, reward, terminated, truncated, info)`
+- RolloutBuffer: 分离 `dones` (episode边界) 和 `terminated` (真正终止)
+- compute_gae(): `bootstrap_mask = 1.0 - terminated`, GAE reset 用 `dones`
+- PPOAgent.store(): 新增 `terminated` 参数
+- A2CAgent: 分离 terminated/truncated 列表，bootstrap 决策基于 terminated
+- ReplayBuffer: 新增 `terminated` 存储，sample() 返回 6-tuple
+- DQNAgent/DoubleDQNAgent: TD target 用 `terminated` 而非 `dones`
+- REINFORCE: 文档说明 5-tuple 接口
 
-### rl_course 核心包（~3900 行 Python）
-- [x] envs/: GridWorld, StochasticGridWorld, MultiArmedBandit
-- [x] networks/: MLP, ValueNetwork, QNetwork, PolicyNetwork, ActorCriticNetwork
-- [x] buffers/: ReplayBuffer, RolloutBuffer (GAE support)
-- [x] agents/base.py: BaseAgent 抽象基类
-- [x] agents/tabular.py: MC, SARSA, Q-Learning, Expected SARSA, Double Q
-- [x] agents/dqn.py: DQN, Double DQN (with Config dataclass)
-- [x] agents/reinforce.py: REINFORCE, REINFORCE+Baseline
-- [x] agents/a2c.py: A2C (n-step, shared backbone)
-- [x] agents/ppo.py: PPO (clip, GAE, multi-epoch, KL early stop)
-- [x] utils/: set_seed, get_device, Config, MetricTracker
-- [x] visualization/: 绑图（Agg 后端）、视频录制（imageio）
+### P0.2 — PPOAgent 优势标准化修复
+- 标准化后的优势写回 `self.buffer.advantages[:n]`
+- Minibatch 现在读取到标准化后的优势
 
-### Notebooks（26 个，00-25）
+### P0.3 — Notebook 20 PPO from scratch 修复
+- collect_rollout() 接受外部 state 参数（rollout 连续性）
+- episode return 正确追踪（episode 完成时记录）
+- GAE 使用 critic 计算 last_value 而非 0.0
+- get_minibatches() 在每个 epoch 内调用（重新 shuffle）
+- KL 早停标注为标准 PPO 行为（仅停当前 epoch）
+- 指标使用实际 optimizer step 数
 
-| # | 文件 | 状态 | 说明 |
-|---|------|------|------|
-| 00 | course_guide | ✅ | 28 天计划、环境配置 |
-| 01 | rl_overview | ✅ | RL 概述、核心概念 |
-| 02 | math_and_pytorch | ✅ | 概率、梯度、PyTorch autograd |
-| 03 | bandit | ✅ | 多臂老虎机、探索策略 |
-| 04 | mdp | ✅ | MDP 形式化、转移矩阵 |
-| 05 | bellman_dp | ✅ | Bellman 方程、VI/PI |
-| 06 | monte_carlo | ✅ | MC 预测与控制 |
-| 07 | td_learning | ✅ | TD(0)、n-step、TD(λ) |
-| 08 | sarsa_q_learning | ✅ | SARSA/Q-Learning 对比 |
-| 09 | function_approximation | ✅ | 线性/神经网络 FA |
-| 10 | dqn | ✅ | DQN from scratch (CartPole) |
-| 11 | policy_gradient_derivation | ✅ | PG 定理完整推导 |
-| 12 | reinforce | ✅ | REINFORCE from scratch |
-| 13 | baseline_and_advantage | ✅ | Baseline 理论与实验 |
-| 14 | actor_critic | ✅ | One-step AC from scratch |
-| 15 | a2c | ✅ | A2C from scratch |
-| 16 | importance_sampling | ✅ | IS 理论与方差分析 |
-| 17 | trpo | ✅ | TRPO 理论与简化实现 |
-| 18 | gae | ✅ | GAE 推导与 λ 实验 |
-| 19 | ppo_theory | ✅ | PPO-Clip 理论 |
-| 20 | ppo_from_scratch | ✅ | PPO 完整实现 |
-| 21 | rl_debugging | ✅ | 调试方法论 |
-| 22 | experiment_design | ✅ | 消融实验与超参 |
-| 23 | capstone_project | ✅ | 结课项目模板 |
-| 24 | interview_review | ✅ | 面试十题（分层答案） |
-| 25 | final_assessment | ✅ | 最终评估 |
+### P0.4 — TRPO Notebook 17 重写
+- 删除错误的 SimplifiedTRPO（KL 恒为 0）
+- 新增 4 个正确的组件演示：KL、HVP、CG、Line Search
+- 明确说明完整 TRPO 的复杂性和 PPO 的实用性
 
-### 测试
-- [x] 12 个 pytest 测试全部通过
-- [x] 覆盖 envs, networks, buffers, agents, utils
+### P0.5 — REINFORCE baseline Critic target 修复
+- Critic 拟合原始（未归一化）回报
+- 优势在原始尺度计算后归一化
+- Basic REINFORCE 标注 per-episode 归一化为 heuristic
 
-### 输出示例
-- [x] outputs/figures/ 下有多个示例图片
+### P0.6 — Debug Notebook 21 重写
+- 移除 BUG 1-8 标签
+- 三级分类：确定错误 / 高风险问题 / 可选稳定化技巧
+- 修复错误答案（value loss 描述）
+- 答案折叠在最后
+
+### P0.7 — 理论 Notebook 修复
+- MDP (04): 修正 Markov 性质表述、石头剪刀布例子、Continuing task 说明
+- Policy Gradient (11): 区分 trajectory REINFORCE 与 PG Theorem、修复损坏 LaTeX
+- PPO Theory (19): 修正 clipping 描述、指标范围改为经验参考、PPO 不是严格信任域
+
+## 测试状态
+
+- 12/12 pytest 通过
+- CUDA 警告：驱动 12.9 vs PyTorch 12.8，回退 CPU，不影响使用
 
 ## 已知限制
 
-1. **CUDA**：驱动 (12.9) 与 PyTorch CUDA (12.8) 版本不完全匹配，回退到 CPU。不影响使用。
-2. **Notebook 执行验证**：部分 Notebook 包含完整训练循环，需要数分钟运行。已通过 smoke test。
-3. **TRPO 完整实现**：Notebook 17 提供简化版 TRPO（penalty 方法），完整 conjugate gradient 版本在理论部分有推导。
-4. **连续动作 PPO**：基础版 PPO 支持离散动作。连续动作版本需后续补充。
-
-## 如何启动
-
-```bash
-cd /workspace/data/vggt-omega/rl
-uv sync
-uv run python -m ipykernel install --user --name rl-course --display-name "Python (RL Course)"
-uv run jupyter lab --no-browser --ip=0.0.0.0
-```
-
-## 后续建议
-
-1. 补充连续动作空间的 PPO/Gaussian Policy 完整实现
-2. 添加 Atari/MuJoCo 环境支持
-3. 添加 RLHF 相关内容
-4. 添加更多消融实验的完整代码
+1. TRPO 提供组件演示而非完整可训练实现
+2. 连续动作 PPO 待补充
+3. Notebook 快速模式执行脚本待补充 (P1.3)
+4. uv.lock 待提交 (P1.1)
+5. 周测文件待补充 (P2.1)

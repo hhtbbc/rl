@@ -234,19 +234,22 @@ class DQNAgent(BaseAgent):
         self,
         rewards: torch.Tensor,      # shape: (batch_size,)
         next_states: torch.Tensor,  # shape: (batch_size, state_dim)
-        dones: torch.Tensor,        # shape: (batch_size,) — 1 表示终止，0 表示未终止
+        terminated: torch.Tensor,   # shape: (batch_size,) — 1=真正终止, 0=未终止或截断
     ) -> torch.Tensor:
         """计算 TD 目标（标准 DQN）
 
         DQN 使用 target 网络中最大的 Q 值作为未来回报估计:
-            target = r + gamma * max_a' Q_target(s', a') * (1 - done)
+            target = r + gamma * max_a' Q_target(s', a') * (1 - terminated)
 
-        当 done = 1 时，(1 - done) = 0，消除未来回报，目标 = r。
+        关键区分:
+        - terminated = 1 (真正到达目标): 不 bootstrap, 未来价值为 0
+        - terminated = 0 (未终止或时间截断): 从 next_state bootstrap
+          即使 episode 因时间截断而结束, 状态仍有有效的未来价值
 
         Args:
             rewards: 奖励，shape (batch_size,)
             next_states: 下一状态，shape (batch_size, state_dim)
-            dones: 终止标志，shape (batch_size,)
+            terminated: 真正终止标志 (非 done), shape (batch_size,)
 
         Returns:
             TD 目标值，shape (batch_size,)
@@ -258,8 +261,8 @@ class DQNAgent(BaseAgent):
             # 取所有动作中的最大 Q 值（标准 DQN 的过估计来源）
             max_next_q = next_q_values.max(dim=1)[0]          # (batch,)
 
-            # TD 目标：done 状态只取即时奖励，非终止状态加上折扣未来回报
-            target = rewards + self.gamma * max_next_q * (1.0 - dones)
+            # TD 目标: 真正终止时不 bootstrap, 截断时仍然 bootstrap
+            target = rewards + self.gamma * max_next_q * (1.0 - terminated)
 
         return target
 
@@ -295,12 +298,13 @@ class DQNAgent(BaseAgent):
 
         # ----- 1. 采样 -----
         # 从经验回放中均匀随机采样一个 minibatch
-        # states:    (batch_size, state_dim)
-        # actions:   (batch_size,)
-        # rewards:   (batch_size,)
+        # states:      (batch_size, state_dim)
+        # actions:     (batch_size,)
+        # rewards:     (batch_size,)
         # next_states: (batch_size, state_dim)
-        # dones:     (batch_size,)
-        states, actions, rewards, next_states, dones = \
+        # dones:       (batch_size,) — episode 边界 (terminated or truncated)
+        # terminated:  (batch_size,) — 真正的环境终止
+        states, actions, rewards, next_states, dones, terminated = \
             self.replay_buffer.sample(self.batch_size)
 
         # ----- 2. 计算当前 Q 值 -----
@@ -310,7 +314,9 @@ class DQNAgent(BaseAgent):
         q_value = q_value.squeeze(1)                            # (batch,)
 
         # ----- 3. 计算 TD 目标 -----
-        target = self._compute_target(rewards, next_states, dones)  # (batch,)
+        # 使用 terminated (而非 dones) 作为 bootstrap mask
+        # 时间截断的 transition 仍然需要从 next_state bootstrap
+        target = self._compute_target(rewards, next_states, terminated)  # (batch,)
 
         # ----- 4. 计算损失 -----
         # MSE 或 Huber 损失：衡量当前 Q 值与 TD 目标之间的差距
@@ -459,39 +465,31 @@ class DoubleDQNAgent(DQNAgent):
         self,
         rewards: torch.Tensor,      # shape: (batch_size,)
         next_states: torch.Tensor,  # shape: (batch_size, state_dim)
-        dones: torch.Tensor,        # shape: (batch_size,) — 1 表示终止
+        terminated: torch.Tensor,   # shape: (batch_size,) — 1=真正终止, 0=未终止或截断
     ) -> torch.Tensor:
         """计算 TD 目标（Double DQN）
 
         公式:
-            a' = argmax_a' Q_online(s', a')
-            target = r + gamma * Q_target(s', a') * (1 - done)
-
-        相比标准 DQN 的 max Q_target(s', a')，这里先用 online 网络
-        选出最优动作 a'，再用 target 网络计算该动作的值。
+            a* = argmax_a Q_online(s', a)
+            target = r + gamma * Q_target(s', a*) * (1 - terminated)
 
         Args:
             rewards: 奖励，shape (batch_size,)
             next_states: 下一状态，shape (batch_size, state_dim)
-            dones: 终止标志，shape (batch_size,)
+            terminated: 真正终止标志 (非 dones), shape (batch_size,)
 
         Returns:
             TD 目标值，shape (batch_size,)
         """
         with torch.no_grad():
-            # 1. online 网络选动作: a' = argmax_a Q_online(s', a)
-            #    选择当前策略认为最优的动作
             online_q = self.q_network(next_states)   # (batch, n_actions)
-            best_actions = online_q.argmax(dim=1)     # (batch,) — 最优动作索引
+            best_actions = online_q.argmax(dim=1)     # (batch,)
 
-            # 2. target 网络估值: Q_target(s', a')
-            #    使用 target 网络评估所选动作的价值（而非最大值）
-            target_q = self.target_network(next_states)               # (batch, n_actions)
-            max_next_q = target_q.gather(1, best_actions.unsqueeze(1))  # (batch, 1)
-            max_next_q = max_next_q.squeeze(1)                           # (batch,)
+            target_q = self.target_network(next_states)
+            max_next_q = target_q.gather(1, best_actions.unsqueeze(1)).squeeze(1)
 
-            # 3. TD 目标：done 状态只取即时奖励
-            target = rewards + self.gamma * max_next_q * (1.0 - dones)
+            # 使用 terminated (而非 dones): 截断时仍需 bootstrap
+            target = rewards + self.gamma * max_next_q * (1.0 - terminated)
 
         return target
 

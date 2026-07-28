@@ -140,7 +140,11 @@ class REINFORCEAgent(BaseAgent):
         returns = torch.FloatTensor(returns).to(self.device)
 
         # 归一化回报（减小方差，稳定训练）
-        returns = (returns - returns.mean()) / (returns.std() + 1e-8)
+        # 注意: 这是训练启发式 (heuristic)，并非原始 REINFORCE 的必要部分
+        # 原始 REINFORCE 使用未归一化的 G_t，是无偏估计
+        # 归一化引入了 episode 间的相关性，但实践中显著降低方差
+        if returns.numel() > 1:
+            returns = (returns - returns.mean()) / (returns.std() + 1e-8)
 
         # 策略梯度损失
         # L = -1/N * sum log pi(a_t|s_t) * G_t
@@ -279,23 +283,26 @@ class REINFORCEWithBaselineAgent(BaseAgent):
         rewards = torch.FloatTensor(self.episode_rewards).to(self.device)
         log_probs = torch.cat(self.episode_log_probs).to(self.device)
 
-        # 计算折扣回报 G_t
-        returns = []
+        # 计算折扣回报 G_t (原始尺度，不归一化)
+        # Critic 必须学习预测原始尺度的 V^π(s)，而非归一化后的值
+        raw_returns_list = []
         G = 0.0
         for r in reversed(rewards):
             G = r + self.gamma * G
-            returns.insert(0, G)
-        returns = torch.FloatTensor(returns).to(self.device)
+            raw_returns_list.insert(0, G)
+        raw_returns = torch.FloatTensor(raw_returns_list).to(self.device)
 
-        # 归一化回报以稳定训练
-        returns = (returns - returns.mean()) / (returns.std() + 1e-8)
+        # 计算价值基线 V(s_t) — Critic 学习拟合原始回报
+        values = self.value(states).squeeze(-1)  # shape (T,)
 
-        # 计算价值基线 V(s_t)
-        # 价值网络输出 shape: (batch_size, 1)，squeeze 为 (batch_size,)
-        values = self.value(states).squeeze(-1)
+        # 计算优势 A_t = G_t - V(s_t)（在原始回报尺度上）
+        advantages = raw_returns - values  # shape (T,)
 
-        # 计算优势 A_t = G_t - V(s_t)
-        advantages = returns - values
+        # 标准化优势 (Advantage Normalization) — 降低策略梯度方差
+        # 注意: 标准化的是优势，不是回报！
+        # Critic 的 target 仍然是原始回报 (见 value_loss)
+        if advantages.numel() > 1:
+            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
         # ===============================================================
         # 关键：对 advantages 调用 detach()！
@@ -310,11 +317,10 @@ class REINFORCEWithBaselineAgent(BaseAgent):
         # 使策略梯度只影响策略网络参数。
         # 不 detach 会导致价值网络发散，训练失败。
         # ===============================================================
-        # 策略梯度损失（优势已 detach，梯度不会流入价值网络）
         policy_loss = -(log_probs * advantages.detach()).mean()
 
-        # 价值损失：价值网络拟合回报
-        value_loss = F.mse_loss(values, returns)
+        # 价值损失：Critic 拟合原始（未归一化）回报
+        value_loss = F.mse_loss(values, raw_returns)
 
         # 总损失
         total_loss = policy_loss + value_loss

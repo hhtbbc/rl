@@ -83,15 +83,21 @@ class GridWorld:
         self.steps_taken = 0
         return self._pos_to_state[tuple(self.agent_pos)]
 
-    def step(self, action: int) -> Tuple[int, float, bool, Dict[str, Any]]:
+    def step(self, action: int) -> Tuple[int, float, bool, bool, Dict[str, Any]]:
         """
-        执行一个动作。
+        执行一个动作（Gymnasium 5 元组接口）。
 
         Args:
             action: 0=上, 1=右, 2=下, 3=左
 
         Returns:
-            (next_state, reward, done, info)
+            (observation, reward, terminated, truncated, info)
+
+            - terminated: 智能体到达目标（自然终止）
+            - truncated: 达到 max_steps 但未到达目标（时间截断）
+            - 两者的区别对 GAE bootstrap 至关重要：
+              terminated=True → 未来价值为 0
+              truncated=True  → 仍需从最终状态 bootstrap
         """
         if self.slip_prob > 0 and self.rng.rand() < self.slip_prob:
             # 随机选择一个动作（slippery 转移）
@@ -110,14 +116,21 @@ class GridWorld:
 
         self.steps_taken += 1
         state = self._pos_to_state[tuple(self.agent_pos)]
-        done = tuple(self.agent_pos) == self.goal_pos
-        truncated = self.steps_taken >= self.max_steps
 
-        reward = self.goal_reward if done else self.step_reward
+        # 区分两种终止方式
+        terminated = tuple(self.agent_pos) == self.goal_pos
+        truncated = (self.steps_taken >= self.max_steps) and not terminated
 
-        info = {"steps": self.steps_taken, "pos": tuple(self.agent_pos)}
+        reward = self.goal_reward if terminated else self.step_reward
 
-        return state, reward, done or truncated, info
+        info = {
+            "steps": self.steps_taken,
+            "pos": tuple(self.agent_pos),
+            "terminated": terminated,
+            "truncated": truncated,
+        }
+
+        return state, reward, terminated, truncated, info
 
     def get_available_actions(self) -> List[int]:
         """返回当前状态下合法的动作列表"""

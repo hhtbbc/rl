@@ -66,8 +66,9 @@ class A2CAgent(BaseAgent):
         # Rollout 缓存（存储 n_step 的经验）
         self.states: List[torch.Tensor] = []   # 状态
         self.actions: List[int] = []            # 动作
-        self.rewards: List[float] = []          # 奖励（由外部在 env.step 后追加）
-        self.dones: List[bool] = []             # 终止标志（由外部在 env.step 后追加）
+        self.rewards: List[float] = []          # 奖励
+        self.dones: List[bool] = []             # episode 边界 (terminated or truncated)
+        self.terminated_list: List[bool] = []   # 真正的环境终止 (vs 时间截断)
 
     def act(self, obs: np.ndarray, train: bool = True) -> int:
         """
@@ -155,8 +156,12 @@ class A2CAgent(BaseAgent):
         entropy = -(probs * log_prob_all).sum(dim=-1).mean()
 
         # 计算 n-step 引导值 V(s_{t+n})
-        if next_obs is not None and not self.dones[-1]:
-            # episode 未结束，使用 V(s_{t+n}) 引导
+        # 关键区分:
+        #   - 真正终止 (terminated): 不 bootstrap, V=0
+        #   - 时间截断 (truncated, done=True but terminated=False): 需要 bootstrap
+        last_terminated = self.terminated_list[-1] if self.terminated_list else False
+        if next_obs is not None and not last_terminated:
+            # episode 未真正终止 (可能是截断), 使用 V(s_{t+n}) 引导
             next_obs_t = (
                 torch.FloatTensor(np.array(next_obs, dtype=np.float32))
                 .unsqueeze(0)
@@ -166,12 +171,12 @@ class A2CAgent(BaseAgent):
                 _, bootstrap_value = self.actor_critic(next_obs_t)
             G = bootstrap_value.squeeze(-1).item()
         else:
-            # episode 已结束，引导值为 0
+            # episode 真正终止, 引导值为 0
             G = 0.0
 
         # 从后向前递归计算 n-step 回报
         # R_t = r_t + gamma * (1 - done_t) * R_{t+1}
-        # 其中 R_{n} = bootstrap_value 即 V(s_{t+n})（或 0，若已终止）
+        # done_t 是 episode 边界 (terminated or truncated), 都重置累积
         returns = []
         for i in reversed(range(len(rewards))):
             done = dones[i]
@@ -213,6 +218,7 @@ class A2CAgent(BaseAgent):
         self.actions.clear()
         self.rewards.clear()
         self.dones.clear()
+        self.terminated_list.clear()
 
         return {
             "policy_loss": policy_loss_val,

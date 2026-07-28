@@ -217,18 +217,21 @@ class PPOAgent(BaseAgent):
     # ======================================================================
     # store() — 完成 transition 存储
     # ======================================================================
-    def store(self, reward: float, done: bool) -> None:
+    def store(self, reward: float, done: bool, terminated: bool = False) -> None:
         """
-        存储一步环境反馈（reward 和 done），完成 transition 记录。
+        存储一步环境反馈，完成 transition 记录。
 
         与 act() 配对使用:
-            1. act(obs)        — 获取动作，暂存 state/action/log_prob/value
-            2. env.step(action) — 执行动作，获得 reward、done、next_obs
-            3. store(r, done)   — 补充 reward/done，写入缓冲区
+            1. act(obs)              — 获取动作，暂存 state/action/log_prob/value
+            2. env.step(action)       — 执行动作，获得 reward, terminated, truncated
+            3. store(r, done, term)   — 补充 reward/done/terminated，写入缓冲区
 
         Args:
             reward: 环境返回的即时奖励
-            done: 当前 episode 是否终止（terminated 或 truncated）
+            done: 当前 episode 是否结束 (terminated or truncated)
+            terminated: 是否为真正的环境终止 (vs 时间截断)
+                         True → GAE 中不 bootstrap（未来价值为 0）
+                         False + done=True → 时间截断，GAE 中仍需 bootstrap
         """
         if self._last_state is None:
             raise RuntimeError(
@@ -237,7 +240,6 @@ class PPOAgent(BaseAgent):
             )
 
         # 将完整的 transition 写入缓冲区
-        # buffer.add(state, action, reward, done, log_prob, value)
         self.buffer.add(
             self._last_state,
             self._last_action,
@@ -245,6 +247,7 @@ class PPOAgent(BaseAgent):
             done,
             self._last_log_prob,
             self._last_value,
+            terminated=terminated,
         )
 
         # 清空临时存储，防止重复使用
@@ -318,63 +321,46 @@ class PPOAgent(BaseAgent):
         self.buffer.compute_gae(last_value=last_value)
 
         # ----------------------------------------------------------------
-        # Step 3: 准备全量数据
+        # Step 3: 准备全量数据并标准化优势
         # ----------------------------------------------------------------
         n: int = self.buffer.size  # 有效数据量（应等于 n_steps）
 
-        # ---- 从缓冲区取出完整数据用于标准化和 EV 计算 ----
-        # advantages: (n,)  — GAE 优势估计值
-        # returns:    (n,)  — 折扣回报 G_t = A_t + V(s_t)
-        # old_values: (n,)  — 收集数据时 Critic 输出的价值
+        # ---- 从缓冲区取出优势做全局标准化 ----
         advantages_np: np.ndarray = self.buffer.advantages[:n]  # shape (n,)
         returns_np: np.ndarray = self.buffer.returns[:n]        # shape (n,)
 
-        # 转换为 PyTorch 张量
-        advantages: torch.Tensor = torch.as_tensor(
+        # 转换为 PyTorch 张量进行标准化
+        advantages_tensor: torch.Tensor = torch.as_tensor(
             advantages_np, dtype=torch.float32, device=self.device
         )  # shape (n,)
+
+        # ---- 标准化优势 (Advantage Normalization) ----
+        adv_mean: torch.Tensor = advantages_tensor.mean()
+        adv_std: torch.Tensor = advantages_tensor.std()
+        normalized_advantages: torch.Tensor = (
+            advantages_tensor - adv_mean
+        ) / (adv_std + 1e-8)  # shape (n,)
+
+        # ---- 写回 buffer，确保 minibatch 读取到标准化后的优势 ----
+        self.buffer.advantages[:n] = normalized_advantages.cpu().numpy()
+
         returns: torch.Tensor = torch.as_tensor(
             returns_np, dtype=torch.float32, device=self.device
         )  # shape (n,)
 
         # ----------------------------------------------------------------
-        # Step 4: 标准化优势 (Advantage Normalization)
-        # ----------------------------------------------------------------
-        # 理由: 将优势值缩放到均值为 0、标准差为 1 的分布，
-        #       可以稳定策略梯度更新，减少对学习率的敏感性
-        # 注意: 标准化在 minibatch 采样之前对整个 batch 进行
-        adv_mean: torch.Tensor = advantages.mean()
-        adv_std: torch.Tensor = advantages.std()
-        advantages = (advantages - adv_mean) / (adv_std + 1e-8)  # shape (n,)
-
-        # ----------------------------------------------------------------
-        # Step 5: PPO 多轮 Minibatch 更新
+        # Step 4: PPO 多轮 Minibatch 更新
         # ----------------------------------------------------------------
         # 每个 rollout 数据被重复使用 n_epochs 轮
-        # 每轮将数据划分为 batch_size 的 minibatch 进行 SGD
+        # 每轮将数据重新 shuffle 后划分为 minibatch 进行 SGD
         clip_fractions_list: List[float] = []
         approx_kl_list: List[float] = []
         policy_loss_list: List[float] = []
         value_loss_list: List[float] = []
         entropy_loss_list: List[float] = []
 
-        early_stopped: bool = False
-        epoch: int
-
         for epoch in range(self.n_epochs):
-            # ---- 提前停止检查 ----
-            if early_stopped:
-                break
-
-            # ---- 5a: 获取 minibatch 迭代器 ----
-            # get_minibatches 返回:
-            #   (states, actions, returns, advantages, old_log_probs, old_values)
-            #   states:       (batch_size, state_dim)
-            #   actions:      (batch_size,)
-            #   returns:      (batch_size,)
-            #   advantages:   (batch_size,)
-            #   old_log_probs: (batch_size,)
-            #   old_values:   (batch_size,)
+            # ---- 每 epoch 重新获取 shuffled minibatches ----
             for batch in self.buffer.get_minibatches(
                 batch_size=self.batch_size, shuffle=True
             ):
@@ -530,14 +516,13 @@ class PPOAgent(BaseAgent):
                 approx_kl_list.append(float(approx_kl.item()))
                 clip_fractions_list.append(float(clip_fraction.item()))
 
-                # ---- 5n: KL 散度提前停止 ----
-                # 如果 minibatch 的 KL 散度超过阈值，提前结束当前 epoch
-                # 这是 PPO 的安全机制之一
+                # ---- KL 散度早停 (标准 PPO: 仅停止当前 epoch) ----
+                # 如果 minibatch 的近似 KL 超过阈值，提前结束当前 epoch
+                # 注意: 只 break 内层 minibatch 循环，下一 epoch 重新 shuffle 后继续
                 if (
                     self.target_kl is not None
                     and float(approx_kl.item()) > self.target_kl
                 ):
-                    early_stopped = True
                     break
 
         # ----------------------------------------------------------------
@@ -573,6 +558,7 @@ class PPOAgent(BaseAgent):
         # ----------------------------------------------------------------
         # Step 7: 汇总指标
         # ----------------------------------------------------------------
+        n_updates: int = len(policy_loss_list)  # 实际执行的 optimizer step 数
         metrics: Dict[str, float] = {
             "policy_loss": (
                 float(np.mean(policy_loss_list)) if policy_loss_list else 0.0
@@ -590,8 +576,7 @@ class PPOAgent(BaseAgent):
                 float(np.mean(clip_fractions_list)) if clip_fractions_list else 0.0
             ),
             "explained_variance": float(explained_variance.item()),
-            "epochs_completed": epoch + 1,
-            "early_stopped": float(early_stopped),
+            "n_updates": float(n_updates),
         }
 
         # 记录到历史

@@ -42,7 +42,10 @@ class RolloutBuffer:
         self.states = np.zeros((buffer_size, state_dim), dtype=np.float32)
         self.actions = np.zeros(buffer_size, dtype=np.int64)
         self.rewards = np.zeros(buffer_size, dtype=np.float32)
+        # dones: episode 边界 (terminated OR truncated) — 用于重置 GAE 累积
         self.dones = np.zeros(buffer_size, dtype=np.float32)
+        # terminated: 真正的环境终止 — 用于决定是否 bootstrap
+        self.terminated = np.zeros(buffer_size, dtype=np.float32)
         self.log_probs = np.zeros(buffer_size, dtype=np.float32)
         self.values = np.zeros(buffer_size, dtype=np.float32)
 
@@ -61,6 +64,7 @@ class RolloutBuffer:
         done: bool,
         log_prob: float,
         value: float,
+        terminated: bool = False,
     ) -> None:
         """
         存入一步数据。
@@ -69,15 +73,19 @@ class RolloutBuffer:
             state: 状态向量，shape (state_dim,)
             action: 动作
             reward: 奖励
-            done: 是否终止
+            done: episode 是否结束 (terminated or truncated)
             log_prob: 动作的 log probability
             value: Critic 估计的状态价值
+            terminated: 是否为真正的环境终止 (vs 时间截断)
+                         True → 不 bootstrap（未来价值为 0）
+                         False + done=True → 时间截断，仍需 bootstrap
         """
         idx = self.pos
         self.states[idx] = state
         self.actions[idx] = action
         self.rewards[idx] = reward
         self.dones[idx] = float(done)
+        self.terminated[idx] = float(terminated)
         self.log_probs[idx] = log_prob
         self.values[idx] = value
 
@@ -90,28 +98,41 @@ class RolloutBuffer:
         使用 GAE 计算 advantages 和 returns。
 
         公式:
-            δₜ = rₜ + γ * V(sₜ₊₁) * (1 - doneₜ) - V(sₜ)
+            δₜ = rₜ + γ * V(sₜ₊₁) * bootstrap_maskₜ - V(sₜ)
             Aₜ^GAE = Σ_{l=0}^{∞} (γλ)^l * δₜ₊ₗ
             Gₜ = Aₜ + V(sₜ)
 
+        关键设计:
+            - bootstrap_mask = 1.0 - terminatedₜ
+              只有真正终止 (terminated) 才不 bootstrap。
+              时间截断 (truncated) 时仍需用 V(s') 估计未来。
+            - donesₜ 用于重置 GAE 累积 (无论终止还是截断，
+              episode 边界后 GAE 从零开始)。
+
         Args:
-            last_value: 最后状态的 Critic 估计（若 episode 未终止）
+            last_value: 最后状态的 Critic 估计
+                        若 rollout 因 n_steps 截断，应传入 V(last_state)
+                        若 episode 真正终止，传入 0.0
         """
         n = self.size
         gae = 0.0
 
         for t in reversed(range(n)):
             next_value = self.values[t + 1] if t + 1 < n else last_value
-            next_done = self.dones[t]
+
+            # bootstrap_mask: 只有真正终止 (goal reached) 才不 bootstrap
+            # 时间截断 (truncated) 时仍需 estimate 未来价值
+            bootstrap_mask = 1.0 - self.terminated[t]
 
             # TD residual: δₜ
             delta = (
                 self.rewards[t]
-                + self.gamma * next_value * (1 - next_done)
+                + self.gamma * next_value * bootstrap_mask
                 - self.values[t]
             )
 
-            # GAE 递推: Aₜ = δₜ + γλ * Aₜ₊₁ * (1 - doneₜ)
+            # GAE 递推: Aₜ = δₜ + γλ * Aₜ₊₁ * (1 - episode_boundaryₜ)
+            # 在 episode 边界 (terminated or truncated) 处重置 GAE
             gae = delta + self.gamma * self.gae_lambda * gae * (1 - self.dones[t])
             self.advantages[t] = gae
 

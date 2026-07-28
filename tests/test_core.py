@@ -73,11 +73,14 @@ def test_gridworld():
     state = gw.reset()
     assert state == 0  # Start at (0,0)
 
-    # Test step
-    next_state, reward, done, info = gw.step(1)  # Right
+    # Test step — now returns 5-tuple (obs, reward, terminated, truncated, info)
+    result = gw.step(1)  # Right
+    assert len(result) == 5
+    next_state, reward, terminated, truncated, info = result
     assert next_state == 1
     assert reward == -1.0
-    assert not done
+    assert not terminated
+    assert not truncated
 
     # Test transition matrix
     P = gw.get_transition_matrix()
@@ -163,12 +166,13 @@ def test_replay_buffer():
 
     assert len(buf) == 10  # Max capacity
 
-    states, actions, rewards, next_states, dones = buf.sample(3)
+    states, actions, rewards, next_states, dones, terminated = buf.sample(3)
     assert states.shape == (3, 4)
     assert actions.shape == (3,)
     assert rewards.shape == (3,)
     assert next_states.shape == (3, 4)
     assert dones.shape == (3,)
+    assert terminated.shape == (3,)
 
 
 def test_rollout_buffer():
